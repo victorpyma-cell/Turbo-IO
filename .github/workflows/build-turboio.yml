@@ -1,0 +1,107 @@
+name: Build Turbo IO iPhone extension
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_bundle_id:
+        description: Exact final app bundle identifier used by your signing tool
+        required: true
+        type: string
+        default: com.rayneo.venus.pub
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      TARGET_BUNDLE_ID: ${{ inputs.target_bundle_id }}
+      SOURCE_COMMIT: c8815c0b2ff9db3bcdaeeb75abb3ca0e42251efb
+    steps:
+      - name: Get the reviewed upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: Turbo1123/Turbo-IO
+          ref: c8815c0b2ff9db3bcdaeeb75abb3ca0e42251efb
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Validate build input and record toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_BUNDLE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9.-]+\.[A-Za-z0-9.-]+$ ]] || exit 2
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          node --version
+
+      - name: Check host compatibility and embedding logic
+        run: |
+          node --test official-addon/host-compatibility.test.mjs official-addon/macho-embed.test.mjs official-addon/package.test.mjs
+          bash official-addon/test.sh
+
+      - name: Compile the standard extension for the exact app identifier
+        shell: bash
+        env:
+          TIO_OTA_RESEARCH_ENABLED: '0'
+          TIO_NATIVE_NAV: '0'
+          TIO_MUSIC: '0'
+          TIO_LOCAL_TRANSLATION: '0'
+          TIO_AMAP_ENABLED: '0'
+          TIO_CLASSIC_BINDINGS: '1'
+        run: bash official-addon/build.sh embedded "$TARGET_BUNDLE_ID"
+
+      - name: Verify binary and prepare download
+        shell: bash
+        run: |
+          set -euo pipefail
+          addon=official-addon/build/embedded/TurboIOPrivateAddon.dylib
+          test "$(lipo -archs "$addon")" = arm64
+          codesign --verify --strict "$addon"
+          otool -L "$addon"
+          mkdir artifact
+          cp "$addon" LICENSE NOTICE THIRD_PARTY_NOTICES.md artifact/
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path('artifact')
+          addon = root / 'TurboIOPrivateAddon.dylib'
+          data = addon.read_bytes()
+          bundle = os.environ['TARGET_BUNDLE_ID']
+          assert (bundle + '\0').encode() in data, 'Target identifier missing from binary'
+          manifest = {
+              'status': 'COMPILED_EXTENSION_NOT_SIGNED_FOR_IPHONE',
+              'source_repository': 'https://github.com/Turbo1123/Turbo-IO',
+              'source_commit': os.environ['SOURCE_COMMIT'],
+              'target_bundle_id': bundle,
+              'addon_sha256': hashlib.sha256(data).hexdigest(),
+              'minimum_extension_ios': '16.0',
+              'sdk': subprocess.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-version'], text=True).strip(),
+              'experimental_firmware_enabled': False,
+              'secrets_required_for_build': False,
+              'device_tested': False
+          }
+          (root / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          (root / 'SHA256SUMS.txt').write_text(manifest['addon_sha256'] + '  TurboIOPrivateAddon.dylib\n')
+          (root / 'READ-ME.txt').write_text(
+              'This is the standard Turbo IO extension, not an installable iPhone app.\n'
+              'Target app bundle identifier: ' + bundle + '\n'
+              'It must exactly match the FINAL identifier after signing.\n'
+              'Use the matching unencrypted RayNeo host and preserve its version/UUID checks.\n'
+              'No personal signing certificate, Apple login, firmware, model key or host IPA is included.\n'
+              'A successful build does not verify operation on an iPhone or glasses.\n'
+          )
+          PY
+
+      - name: Save extension and build manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: turboio-iphone-extension-${{ github.run_id }}
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 7
