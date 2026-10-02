@@ -1341,7 +1341,7 @@ diff --git a/official-addon/realtime/LocalSpeech.swift b/official-addon/realtime
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/LocalSpeech.swift
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,127 @@
 +import Foundation
 +import Speech
 +import AVFAudio
@@ -1365,17 +1365,37 @@ new file mode 100644
 +    private var generation = 0
 +    private var starting = false
 +    private(set) var inputName = "iPhone microphone"
++    private(set) var engineName = "on-device speech"
 +
 +    static func languages() async -> [Locale] {
-+        guard SpeechTranscriber.isAvailable else { return [] }
-+        return await SpeechTranscriber.supportedLocales.sorted { $0.identifier < $1.identifier }
++        let modern = SpeechTranscriber.isAvailable ? await SpeechTranscriber.supportedLocales : []
++        let dictation = await DictationTranscriber.supportedLocales
++        return Set((modern+dictation).map(\.identifier)).sorted().map { Locale(identifier:$0) }
++    }
++    private static func makeModule(_ identifier: String, requireInstalled: Bool) async throws -> any SpeechModule {
++        if SpeechTranscriber.isAvailable,
++           let locale = await SpeechTranscriber.supportedLocale(equivalentTo:Locale(identifier:identifier)) {
++            if requireInstalled {
++                guard await SpeechTranscriber.installedLocales.contains(where:{$0.identifier == locale.identifier}) else {
++                    throw RealtimeError("Tap Prepare speech language first to download Apple's on-device model.")
++                }
++            }
++            return SpeechTranscriber(locale:locale,transcriptionOptions:[],reportingOptions:[.volatileResults],attributeOptions:[.audioTimeRange])
++        }
++        // Apple's compatibility engine also stays on device. Do not fall back to
++        // network recognition or silently send microphone audio to a provider.
++        if let locale = await DictationTranscriber.supportedLocale(equivalentTo:Locale(identifier:identifier)) {
++            if requireInstalled {
++                guard await DictationTranscriber.installedLocales.contains(where:{$0.identifier == locale.identifier}) else {
++                    throw RealtimeError("Tap Prepare speech language first to download Apple's on-device dictation model.")
++                }
++            }
++            return DictationTranscriber(locale:locale,contentHints:[.farField],transcriptionOptions:[],reportingOptions:[.volatileResults],attributeOptions:[.audioTimeRange])
++        }
++        throw RealtimeError("On-device speech is unavailable for this device or language.")
 +    }
 +    func prepareLanguage(_ identifier: String) async throws {
-+        guard SpeechTranscriber.isAvailable,
-+              let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: identifier)) else {
-+            throw RealtimeError("On-device speech is unavailable for this device or language.")
-+        }
-+        let module = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [.audioTimeRange])
++        let module = try await Self.makeModule(identifier,requireInstalled:false)
 +        if let request = try await AssetInventory.assetInstallationRequest(supporting: [module]) {
 +            try await request.downloadAndInstall()
 +        }
@@ -1385,16 +1405,10 @@ new file mode 100644
 +        starting = true
 +        defer { starting = false }
 +        generation += 1; let epoch = generation
-+        guard SpeechTranscriber.isAvailable,
-+              let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: language)) else {
-+            throw RealtimeError("This speech language is not supported on this iPhone.")
-+        }
-+        guard await SpeechTranscriber.installedLocales.contains(where: { $0.identifier == locale.identifier }) else {
-+            throw RealtimeError("Tap Prepare speech language first to download Apple's on-device model.")
-+        }
++        let module = try await Self.makeModule(language,requireInstalled:true)
 +        try Task.checkCancellation()
 +        guard epoch == generation else { throw CancellationError() }
-+        let module = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [.audioTimeRange])
++        engineName = module is SpeechTranscriber ? "on-device speech" : "on-device dictation"
 +        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else {
 +            throw RealtimeError("The speech model is not ready. Prepare the selected language again.")
 +        }
@@ -1422,10 +1436,18 @@ new file mode 100644
 +            microphone.onFailure = { [weak self] _ in self?.fail("The microphone route changed or audio was interrupted. Restart when ready.", epoch: epoch) }
 +            results = Task { [weak self] in
 +                do {
-+                    for try await result in module.results {
-+                        guard let self, self.generation == epoch, !Task.isCancelled else { return }
-+                        let range = result.range
-+                        self.onText?(TranscriptPiece(start: CMTimeGetSeconds(range.start), end: CMTimeGetSeconds(CMTimeRangeGetEnd(range)), text: String(result.text.characters), final: result.isFinal))
++                    if let transcriber = module as? SpeechTranscriber {
++                        for try await result in transcriber.results {
++                            guard let self, self.generation == epoch, !Task.isCancelled else { return }
++                            let range = result.range
++                            self.onText?(TranscriptPiece(start:CMTimeGetSeconds(range.start),end:CMTimeGetSeconds(CMTimeRangeGetEnd(range)),text:String(result.text.characters),final:result.isFinal))
++                        }
++                    } else if let transcriber = module as? DictationTranscriber {
++                        for try await result in transcriber.results {
++                            guard let self, self.generation == epoch, !Task.isCancelled else { return }
++                            let range = result.range
++                            self.onText?(TranscriptPiece(start:CMTimeGetSeconds(range.start),end:CMTimeGetSeconds(CMTimeRangeGetEnd(range)),text:String(result.text.characters),final:result.isFinal))
++                        }
 +                    }
 +                } catch { if !Task.isCancelled { self?.fail("On-device speech stopped. Restart the session.", epoch: epoch) } }
 +            }
@@ -2097,7 +2119,7 @@ new file mode 100644
 +                running = true
 +                try await speech.start(language:source)
 +                guard epoch == runGeneration, !Task.isCancelled else { throw CancellationError() }
-+                busy = false; status = "Listening · iPhone microphone · on-device speech"
++                busy = false; status = "Listening · iPhone microphone · \(speech.engineName)"
 +                UIApplication.shared.isIdleTimerDisabled = true
 +            } catch {
 +                if epoch == runGeneration { stop(error is CancellationError ? "Stopped" : error.localizedDescription) }
