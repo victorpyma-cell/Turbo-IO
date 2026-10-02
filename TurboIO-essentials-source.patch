@@ -698,7 +698,7 @@ diff --git a/official-addon/realtime/AppleNavigation.swift b/official-addon/real
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/AppleNavigation.swift
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,191 @@
 +import Foundation
 +import MapKit
 +import CoreLocation
@@ -732,7 +732,7 @@ new file mode 100644
 +    private var offRouteCount = 0
 +    private var lastReroute = Date.distantPast
 +    private var timer: Timer?
-+    private var acquiring = false
++    @Published private(set) var acquiring = false
 +    override init() {
 +        super.init(); manager.delegate = self
 +        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
@@ -871,6 +871,7 @@ new file mode 100644
 +        guard running else { return }
 +        if location == nil || Date().timeIntervalSince(location!.timestamp) > 12 {
 +            status = "GPS signal lost · directions paused"
++            instruction = "Directions paused"; distance = ""
 +            GlassesDisplay.shared.update("GPS signal lost\nDirections paused",owner:id)
 +        }
 +    }
@@ -878,6 +879,7 @@ new file mode 100644
 +        routeEpoch += 1; searchEpoch += 1; directions?.cancel(); directions = nil; search?.cancel(); search = nil
 +        manager.stopUpdatingLocation(); manager.allowsBackgroundLocationUpdates = false
 +        timer?.invalidate(); timer = nil; running = false; acquiring = false; busy = false; status = message
++        instruction = ""; distance = ""; route = nil
 +        GlassesDisplay.shared.release(id)
 +    }
 +    func openGoogleMaps() {
@@ -914,7 +916,7 @@ diff --git a/official-addon/realtime/ChatGPTAccount.swift b/official-addon/realt
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/ChatGPTAccount.swift
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,220 @@
 +import Foundation
 +import UIKit
 +import SafariServices
@@ -966,6 +968,10 @@ new file mode 100644
 +        models = []; selectedModel = nil; status = "Disconnected on this iPhone"
 +    }
 +    func cancelSignIn() {
++        generation += 1
++        cleanUpSignIn()
++    }
++    private func cleanUpSignIn() {
 +        timeout?.cancel(); timeout = nil; listener?.cancel(); listener = nil
 +        let pending = callback; callback = nil; pending?.resume(throwing: CancellationError())
 +        safari?.dismiss(animated: true); safari = nil; signingIn = false
@@ -977,7 +983,7 @@ new file mode 100644
 +        guard !signingIn else { return }
 +        signingIn = true; status = "Waiting for ChatGPT sign-in…"
 +        let epoch = generation
-+        defer { cancelSignIn() }
++        defer { if epoch == generation { cleanUpSignIn() } }
 +        do {
 +            let state = try TokenValidation.random(), nonce = try TokenValidation.random(), verifier = try TokenValidation.random()
 +            expectedState = state
@@ -992,19 +998,23 @@ new file mode 100644
 +            let port: UInt16 = try await withCheckedThrowingContinuation { ready in
 +                var returned = false
 +                server.stateUpdateHandler = { state in
++                    Task { @MainActor in
 +                    guard !returned else { return }
 +                    switch state {
 +                    case .ready: returned = true; if let port = server.port { ready.resume(returning: port.rawValue) } else { ready.resume(throwing: RealtimeError("No local sign-in port is available.")) }
 +                    case .failed, .cancelled: returned = true; ready.resume(throwing: RealtimeError("The local sign-in listener could not start."))
 +                    default: break
 +                    }
++                    }
 +                }
 +                server.start(queue: .main)
 +            }
 +            let redirect = "http://127.0.0.1:\(port)/auth/callback"
 +            server.newConnectionHandler = { [weak self] connection in
++                Task { @MainActor in
 +                connection.start(queue: .main)
 +                self?.receive(connection, data: Data(), redirect: redirect)
++                }
 +            }
 +            var components = URLComponents(string: "https://auth.openai.com/api/accounts/authorize")!
 +            var fields = ["client_id":client,"ext_agent_host_id":host,"response_type":"code","redirect_uri":redirect,
@@ -1047,6 +1057,7 @@ new file mode 100644
 +    }
 +    private func receive(_ connection: NWConnection, data: Data, redirect: String) {
 +        connection.receive(minimumIncompleteLength:1,maximumLength:8192) { [weak self] bytes,_,complete,error in
++            Task { @MainActor in
 +            guard let self else { connection.cancel(); return }
 +            let all = data+(bytes ?? Data())
 +            guard all.count <= 8192, error == nil else { connection.cancel(); return }
@@ -1065,6 +1076,7 @@ new file mode 100644
 +            let pending = self.callback; self.callback = nil
 +            connection.send(content:Data(response.utf8),completion:.contentProcessed { _ in connection.cancel() })
 +            pending?.resume(returning:url)
++            }
 +        }
 +    }
 +    private func tokenRequest(_ fields: [String:String]) async throws -> [String:Any] {
@@ -1129,7 +1141,7 @@ diff --git a/official-addon/realtime/CueService.swift b/official-addon/realtime/
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/CueService.swift
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,80 @@
 +import Foundation
 +
 +// Redirects must not forward a user's bearer credential to another endpoint.
@@ -1184,7 +1196,7 @@ new file mode 100644
 +            guard line.utf8.count <= 65536 else { throw RealtimeError("The provider returned an oversized event.") }
 +            guard line.hasPrefix("data:") else { continue }
 +            let payload = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
-+            if payload == "[DONE]" { completed = true; break }
++            if payload == "[DONE]" { if !subscription { completed = true }; break }
 +            guard let data = payload.data(using: .utf8), let event = try JSONSerialization.jsonObject(with: data) as? [String:Any] else { continue }
 +            if subscription {
 +                let type = event["type"] as? String ?? ""
@@ -1203,7 +1215,8 @@ new file mode 100644
 +            }
 +            guard text.utf8.count <= 4096 else { throw RealtimeError("The provider exceeded the short-cue limit.") }
 +            // Hold the control token, and show useful word/phrase chunks instead of every token.
-+            if !"NO_CUE".hasPrefix(text.trimmingCharacters(in: .whitespacesAndNewlines)), !text.hasPrefix("NO_CUE") { update(text) }
++            let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
++            if !"NO_CUE".hasPrefix(clean), !clean.hasPrefix("NO_CUE") { update(text) }
 +        }
 +        guard completed else { throw RealtimeError("The answer connection ended early. This cue is incomplete.") }
 +        return text.trimmingCharacters(in: .whitespacesAndNewlines) == "NO_CUE" ? "" : text
@@ -1323,7 +1336,7 @@ diff --git a/official-addon/realtime/RealtimeCore.swift b/official-addon/realtim
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeCore.swift
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,94 @@
 +import Foundation
 +
 +// Pure policy shared with the macOS replay tests. No microphone or network here.
@@ -1377,6 +1390,21 @@ new file mode 100644
 +    }
 +    var text: String { RealtimePolicy.clean(pieces.map(\.text).joined(separator: " ")) }
 +    mutating func reset() { pieces.removeAll() }
++}
++
++struct UtteranceWindow {
++    private var window = TranscriptWindow()
++    private var lastEnd = 0.0
++    private var boundary = false
++    mutating func ingest(_ piece: TranscriptPiece) -> String {
++        if piece.start > lastEnd+0.85 || (boundary && piece.start >= lastEnd-0.001) || window.text.count > 1500 {
++            window.reset(); boundary = false
++        }
++        let text = window.ingest(piece)
++        lastEnd = max(lastEnd,piece.end)
++        if piece.final, let last = text.last { boundary = ".!?。！？".contains(last) }
++        return text
++    }
 +}
 +
 +struct XY: Equatable { let x: Double; let y: Double }
@@ -1631,7 +1659,7 @@ new file mode 100644
 +                    if let destination = nav.destination { Marker(destination.name ?? "Destination",coordinate:destination.placemark.coordinate) }
 +                }.frame(height:220).listRowInsets(EdgeInsets())
 +            }
-+            if !nav.running {
++            if !nav.running && !nav.acquiring {
 +                Section("Destination") {
 +                    TextField("Place or address",text:$nav.query).submitLabel(.search).onSubmit { Task { await nav.findPlaces() } }
 +                    Button("Search") { Task { await nav.findPlaces() } }.disabled(nav.busy || nav.query.isEmpty)
@@ -1650,7 +1678,7 @@ new file mode 100644
 +                Text(nav.status).font(.subheadline)
 +                if !nav.distance.isEmpty { Text(nav.distance).font(.largeTitle.bold()) }
 +                if !nav.instruction.isEmpty { Text(nav.instruction).font(.title3) }
-+                if nav.running { Button("End navigation",role:.destructive) { nav.stop() } }
++                if nav.running || nav.acquiring { Button("End navigation",role:.destructive) { nav.stop() } }
 +                else { Button("Start directions") { confirmStart = true }.disabled(nav.destination == nil) }
 +            } footer: { Text("Directions and routes come from Apple Maps. GPS updates advance the instructions on your glasses. Route calculation needs internet access.") }
 +            if nav.destination != nil {
@@ -1670,7 +1698,7 @@ diff --git a/official-addon/realtime/RealtimeSession.swift b/official-addon/real
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeSession.swift
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,239 @@
 +import Foundation
 +import UIKit
 +import SwiftUI
@@ -1757,6 +1785,7 @@ new file mode 100644
 +    private let id = UUID()
 +    private var revision = 0
 +    private var window = TranscriptWindow()
++    private var utterance = UtteranceWindow()
 +    private var latest = ""
 +    private var latestFinal = false
 +    private var completedContext: [String] = []
@@ -1764,14 +1793,12 @@ new file mode 100644
 +    private var debounce: Task<Void,Never>?
 +    private var cueTask: Task<Void,Never>?
 +    private var startTask: Task<Void,Never>?
++    private var stopTask: Task<Void,Never>?
 +    private var translateTask: Task<Void,Never>?
 +    private var pendingTranslation: (text:String,revision:Int)?
 +    private var translatedSession: TranslationSession?
 +    private var runGeneration = 0
 +    private var lastResultAt = Date.distantPast
-+    private var lastAudioEnd = 0.0
-+    private var utteranceStart = 0.0
-+    private var workingUtterance = ""
 +    private var closedRanges = Set<Double>()
 +
 +    func loadLanguages() async {
@@ -1804,7 +1831,7 @@ new file mode 100644
 +                }
 +                try Task.checkCancellation()
 +                try GlassesDisplay.shared.acquire(id,enabled:showOnGlasses) { [weak self] message in self?.stop(message) }
-+                window.reset(); closedRanges.removeAll(); completedContext.removeAll(); latest = ""; workingUtterance = ""; captions = ""; output = ""; lastSubmitted = ""; lastAudioEnd = 0; utteranceStart = 0
++                window.reset(); utterance = UtteranceWindow(); closedRanges.removeAll(); completedContext.removeAll(); latest = ""; captions = ""; output = ""; lastSubmitted = ""
 +                speech.onText = { [weak self] piece in self?.receive(piece) }
 +                speech.onFailure = { [weak self] message in self?.stop(message) }
 +                // Permit results as soon as the engine starts.
@@ -1820,36 +1847,30 @@ new file mode 100644
 +        }
 +    }
 +    func stop(_ message: String = "Stopped") {
-+        runGeneration += 1; revision += 1; running = false; busy = false; status = message
++        runGeneration += 1; let epoch = runGeneration; revision += 1; running = false; busy = true; status = message
 +        startTask?.cancel(); startTask = nil; debounce?.cancel(); cueTask?.cancel(); translateTask?.cancel()
 +        debounce = nil; cueTask = nil; translateTask = nil; pendingTranslation = nil
 +        translatedSession?.cancel(); translatedSession = nil
 +        GlassesDisplay.shared.release(id); UIApplication.shared.isIdleTimerDisabled = false
-+        Task { await speech.stop() }
++        stopTask = Task { await speech.stop(); if runGeneration == epoch { busy = false; stopTask = nil } }
 +    }
 +    private func receive(_ piece: TranscriptPiece) {
 +        guard running else { return }
 +        let full = window.ingest(piece)
 +        captions = String(full.suffix(700))
-+        let clean = RealtimePolicy.clean(piece.text)
-+        // A final result closes this phrase. The analyzer's next range starts a
-+        // fresh utterance; partial revisions of the same range retain its identity.
-+        if piece.start > lastAudioEnd+0.9 || (closedRanges.contains(utteranceStart) && piece.start >= lastAudioEnd-0.001) {
-+            workingUtterance = ""; utteranceStart = piece.start
-+        }
-+        if workingUtterance.isEmpty { utteranceStart = piece.start }
-+        workingUtterance = clean
-+        lastAudioEnd = max(lastAudioEnd,piece.end)
-+        if piece.final && !clean.isEmpty && !closedRanges.contains(piece.start) {
-+            completedContext.append(clean); if completedContext.count > 6 { completedContext.removeFirst() }
++        let clean = utterance.ingest(piece)
++        if piece.final && !piece.text.isEmpty && !closedRanges.contains(piece.start) {
++            completedContext.append(piece.text); if completedContext.count > 6 { completedContext.removeFirst() }
 +            closedRanges.insert(piece.start); if closedRanges.count > 48 { closedRanges = Set(closedRanges.sorted().suffix(24)) }
 +        }
 +        if clean == latest && (!piece.final || latestFinal) { refreshHUD(); return }
-+        revision += 1; let current = revision
++        // Finalizing unchanged words must not invalidate an answer already in flight.
++        if clean != latest { revision += 1 }
++        let current = revision
 +        latest = clean; latestFinal = piece.final; lastResultAt = Date()
 +        debounce?.cancel()
 +        // Never present an old answer as the response to a revised question.
-+        if mode == .cue && clean != lastSubmitted { cueTask?.cancel(); output = "" }
++        if mode == .cue && clean != lastSubmitted { cueTask?.cancel(); cueTask = nil; output = "" }
 +        if mode == .translate { output = "" }
 +        refreshHUD()
 +        guard !clean.isEmpty, mode != .captions else { return }
@@ -1866,12 +1887,13 @@ new file mode 100644
 +        debounce?.cancel(); generateCue(latest,revision:revision)
 +    }
 +    private func generateCue(_ question: String, revision current: Int) {
-+        guard question != lastSubmitted || output.isEmpty else { return }
++        guard question != lastSubmitted || (output.isEmpty && cueTask == nil) else { return }
 +        cueTask?.cancel(); lastSubmitted = question; output = ""; status = "Thinking…"
 +        let started = Date(), epoch = runGeneration
 +        let context = completedContext.filter { $0 != question }.joined(separator:"\n")
 +        cueTask = Task { [weak self] in
 +            guard let self else { return }
++            defer { if self.revision == current && self.runGeneration == epoch { self.cueTask = nil } }
 +            do {
 +                var first = true
 +                let text = try await CueService().answer(question:question,context:context,language:Locale.current.localizedString(forIdentifier:self.source) ?? self.source) { [weak self] text in
@@ -1920,7 +1942,7 @@ diff --git a/official-addon/realtime/RealtimeTests.swift b/official-addon/realti
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeTests.swift
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,50 @@
 +import Foundation
 +import CryptoKit
 +
@@ -1938,6 +1960,11 @@ new file mode 100644
 +        assert(RealtimePolicy.cueCandidate("Explain how this works",final:false))
 +        assert(!RealtimePolicy.cueCandidate("That sounds interesting",final:false))
 +        assert(RealtimePolicy.hud(String(repeating:"翻译🙂",count:200)).utf8.count <= 360)
++        var utterance = UtteranceWindow()
++        _ = utterance.ingest(.init(start:0,end:1,text:"Can you tell me",final:true))
++        assert(utterance.ingest(.init(start:1.1,end:2,text:"how this works?",final:false)) == "Can you tell me how this works?")
++        assert(utterance.ingest(.init(start:1.1,end:2,text:"how this works?",final:true)) == "Can you tell me how this works?")
++        assert(utterance.ingest(.init(start:3,end:4,text:"Next question",final:false)) == "Next question")
 +        let line = [XY(x:0,y:0),XY(x:100,y:0),XY(x:100,y:100)]
 +        let projection = RouteGeometry.project(XY(x:75,y:5),points:line,previous:20,lookAhead:150)!
 +        assert(abs(projection.progress-75)<0.001 && abs(projection.distance-5)<0.001)
