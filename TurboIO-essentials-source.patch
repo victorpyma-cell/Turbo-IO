@@ -1,5 +1,5 @@
 diff --git a/official-addon/Addon.m b/official-addon/Addon.m
-index eb3958b..742dbe9 100644
+index eb3958b..5ed13d4 100644
 --- a/official-addon/Addon.m
 +++ b/official-addon/Addon.m
 @@ -4,17 +4,35 @@
@@ -89,7 +89,7 @@ index eb3958b..742dbe9 100644
  static BOOL StoreKey(NSString *host,NSString *key) {
      NSDictionary *q=KeyQuery(host);
      if(!key.length){OSStatus s=SecItemDelete((__bridge CFDictionaryRef)q);return s==errSecSuccess||s==errSecItemNotFound;}
-@@ -89,7 +123,7 @@ static UIViewController *TopController(void) {
+@@ -89,24 +123,44 @@ static UIViewController *TopController(void) {
      UIViewController *c=window.rootViewController;while(c.presentedViewController)c=c.presentedViewController;return c;
  }
  static void Alert(NSString *title,NSString *message) {
@@ -98,7 +98,27 @@ index eb3958b..742dbe9 100644
  }
  
  @interface TIORequest : TIOWebChatRequest
-@@ -102,11 +136,16 @@ static void Alert(NSString *title,NSString *message) {
+ @property(nonatomic,copy) NSArray<NSDictionary *> *history;
++#if TIO_ESSENTIALS
++@property(nonatomic) id accountRequest;
++#endif
+ - (void)startQuestion:(NSString *)question;
+ @end
+ @implementation TIORequest
++#if TIO_ESSENTIALS
++- (void)cancel { [super cancel]; if([_accountRequest respondsToSelector:@selector(cancel)])[_accountRequest cancel]; _accountRequest=nil; }
++#endif
+ - (void)startQuestion:(NSString *)question {
++#if TIO_ESSENTIALS
++    void (^callback)(NSString *,BOOL,NSString *)=[self.update copy];[self cancel];self.update=callback;
++    if([Prefs integerForKey:@"mode"]==3){
++        __weak typeof(self) weak=self;
++        _accountRequest=TIOStartChatGPTAnswer(question,_history?:@[],^(NSString *text,BOOL done,NSString *error){typeof(self) strong=weak;if(strong.update)strong.update(text,done,error);});
++        if(!_accountRequest&&self.update)self.update(@"",YES,@"ChatGPT module unavailable. This feature requires iOS 26.");
++        return;
++    }
++#endif
+     NSString *endpoint=[Prefs stringForKey:@"endpoint"]?:@"",*model=[Prefs stringForKey:@"model"]?:@"";
      NSURL *url=TIOValidateEndpoint(endpoint); NSString *key=ReadKey(endpoint);
      NSDictionary *payload=TIOChatRequestWithHistory(model,question,_history?:@[]);
      if(!url||!payload||!key.length){if(self.update)self.update(@"",YES,@"请先配置有效的 HTTPS 接口、模型和 Key。");return;}
@@ -115,7 +135,7 @@ index eb3958b..742dbe9 100644
  }
  @end
  
-@@ -212,8 +251,10 @@ static id CopyResponse(id source,NSString *answer,BOOL final) {
+@@ -212,8 +266,10 @@ static id CopyResponse(id source,NSString *answer,BOOL final) {
          dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{[self emitText:test done:YES error:nil generation:gen];});
      }else{
          _request=[TIORequest new];__weak typeof(self) weakSelf=self;
@@ -126,7 +146,7 @@ index eb3958b..742dbe9 100644
          _requestQuestion=[_asr copy];_request.history=[_history snapshot];
          _request.update=^(NSString *text,BOOL done,NSString *error){[weakSelf emitText:text done:done error:error generation:gen];};
          [_request startQuestion:_asr];
-@@ -240,8 +281,23 @@ static id CopyResponse(id source,NSString *answer,BOOL final) {
+@@ -240,8 +296,23 @@ static id CopyResponse(id source,NSString *answer,BOOL final) {
  static void AsrHook(id self,SEL cmd,id text,BOOL final,id sid) {
      NSString *copy=String(text),*session=String(sid);
      void (^work)(void)=^{
@@ -151,7 +171,7 @@ index eb3958b..742dbe9 100644
          // The official app may reopen its microphone after the answer. Cancel
          // playback only when new recognized user speech arrives.
          if(copy.length&&[Prefs boolForKey:@"ttsEnabled"])[VoiceTTS cancel];
-@@ -252,6 +308,9 @@ static void AsrHook(id self,SEL cmd,id text,BOOL final,id sid) {
+@@ -252,6 +323,9 @@ static void AsrHook(id self,SEL cmd,id text,BOOL final,id sid) {
  }
  static void AudioStartHook(id self,SEL cmd) {
      void (^work)(void)=^{
@@ -161,7 +181,7 @@ index eb3958b..742dbe9 100644
  #if TIO_MUSIC
          TMMusicPauseForVoice();
  #endif
-@@ -260,13 +319,18 @@ static void AudioStartHook(id self,SEL cmd) {
+@@ -260,13 +334,18 @@ static void AudioStartHook(id self,SEL cmd) {
  }
  static void NlpHook(id self,SEL cmd,id value) {
      // Route decisions on the main queue to serialize ASR, cancellation and stream completion.
@@ -181,7 +201,7 @@ index eb3958b..742dbe9 100644
  static void AlwaysOnHook(id self,SEL cmd,id value) {
      OriginalAlwaysOn(self,cmd,value);
      if(![Prefs boolForKey:@"captureFinalText"]||![Get(value,@"finish") boolValue])return;
-@@ -458,9 +522,13 @@ static void AlwaysOnHook(id self,SEL cmd,id value) {
+@@ -458,9 +537,13 @@ static void AlwaysOnHook(id self,SEL cmd,id value) {
  }
  @end
  
@@ -196,7 +216,7 @@ index eb3958b..742dbe9 100644
  UITabBarController *TIOCreateResearchPreview(void){
      Prefs=[[NSUserDefaults alloc]initWithSuiteName:@"io.turboio.research.preview"];
      [Prefs registerDefaults:@{@"mode":@0,@"voiceExitCommands":@YES,@"ttsEnabled":@YES,@"ttsEngine":@"local"}];
-@@ -482,7 +550,15 @@ UITabBarController *TIOCreateResearchPreview(void){
+@@ -482,7 +565,15 @@ UITabBarController *TIOCreateResearchPreview(void){
  @end
  @implementation TIOEntryTarget
  + (void)show {UIViewController *top=TopController();if(!top||top.tabBarController.view.tag==7920||top.view.tag==7920)return;static UITabBarController *shell;
@@ -213,7 +233,7 @@ index eb3958b..742dbe9 100644
      for(UINavigationController *nav in shell.viewControllers)[nav popToRootViewControllerAnimated:NO];Entry.hidden=YES;[top presentViewController:shell animated:YES completion:nil];}
  @end
  
-@@ -504,7 +580,11 @@ static void AddEntry(void) {
+@@ -504,7 +595,11 @@ static void AddEntry(void) {
      if(top.tabBarController.view.tag==7920||top.view.tag==7920){Entry.hidden=YES;return;}
      if(!Entry){Entry=[UIButton buttonWithType:UIButtonTypeSystem];[Entry setTitle:@"研究" forState:UIControlStateNormal];Entry.accessibilityLabel=@"Turbo IO 私用研究扩展";Entry.backgroundColor=UIColor.systemIndigoColor;[Entry setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];Entry.layer.cornerRadius=20;[Entry addTarget:TIOEntryTarget.class action:@selector(show) forControlEvents:UIControlEventTouchUpInside];}
      Entry.hidden=NO;Entry.frame=CGRectMake(window.bounds.size.width-66,window.safeAreaInsets.top+80,54,40);[window addSubview:Entry];
@@ -225,7 +245,7 @@ index eb3958b..742dbe9 100644
  }
  __attribute__((constructor)) static void Load(void) {
      // Do not message Foundation/UIKit or create an ObjC autorelease pool under
-@@ -519,6 +599,9 @@ __attribute__((constructor)) static void Load(void) {
+@@ -519,6 +614,9 @@ __attribute__((constructor)) static void Load(void) {
              [Prefs registerDefaults:@{@"voiceExitCommands":@YES,@"ttsEnabled":@YES,@"ttsEngine":@"local"}];
              Controller=[TIOController new];
              ImportPrivateBootstrap();
@@ -235,15 +255,22 @@ index eb3958b..742dbe9 100644
              VoiceTTS=[[TIOVoiceTTS alloc]initWithKeyProvider:^{return ReadKey(TIOVoiceTTSService());}];
              VoiceTTS.localMode=[[Prefs stringForKey:@"ttsEngine"] isEqual:@"local"];
              TIONewsConfigure(^TIONewsCancel(NSString *prompt,void (^completion)(NSString *,NSString *)){
-@@ -529,20 +612,35 @@ __attribute__((constructor)) static void Load(void) {
+@@ -529,20 +627,40 @@ __attribute__((constructor)) static void Load(void) {
                  __block BOOL cancelled=NO;dispatch_async(dispatch_get_main_queue(),^{if(!cancelled)[request startQuestion:prompt];});
                  return [^{cancelled=YES;[request cancel];} copy];
              });
 +#endif
              // Research rows are explicit routes now, not a chain of table hooks.
              [Prefs registerDefaults:@{@"voiceExitCommands":@YES,@"ttsEnabled":@YES,@"ttsEngine":@"local"}];
-             // Do not automatically resume text capture or a model takeover after relaunch/crash.
-             [Prefs setBool:NO forKey:@"captureFinalText"];[Prefs setInteger:0 forKey:@"mode"];
+-            // Do not automatically resume text capture or a model takeover after relaunch/crash.
+-            [Prefs setBool:NO forKey:@"captureFinalText"];[Prefs setInteger:0 forKey:@"mode"];
++            // Never resume recording. Preserve an explicitly selected Essentials provider.
++            [Prefs setBool:NO forKey:@"captureFinalText"];
++#if TIO_ESSENTIALS
++            if(![@[@0,@2,@3] containsObject:@([Prefs integerForKey:@"mode"])])[Prefs setInteger:0 forKey:@"mode"];
++#else
++            [Prefs setInteger:0 forKey:@"mode"];
++#endif
              [Prefs removeObjectForKey:@"verifiedChatDomain"];
 +#if !TIO_ESSENTIALS
              NSURL *library=[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
@@ -274,21 +301,22 @@ index eb3958b..742dbe9 100644
              [loadInfo appendFormat:@"bundle=%@; version=%@; build=%@\n",NSBundle.mainBundle.bundleIdentifier,[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"]];
              for(uint32_t i=0;i<_dyld_image_count();i++){const char *name=_dyld_get_image_name(i);if(name&&[[NSString stringWithUTF8String:name].lastPathComponent isEqual:@"Runner"]){const struct mach_header *h=_dyld_get_image_header(i);[loadInfo appendFormat:@"Runner image index=%u magic=%x\n",i,h->magic];}}
 diff --git a/official-addon/Core.h b/official-addon/Core.h
-index 7c92206..add127c 100644
+index 7c92206..f2f308a 100644
 --- a/official-addon/Core.h
 +++ b/official-addon/Core.h
-@@ -16,6 +16,9 @@ FOUNDATION_EXPORT BOOL TIOIsEligibleChat(NSString *domain, NSString *intent, NSS
+@@ -16,6 +16,10 @@ FOUNDATION_EXPORT BOOL TIOIsEligibleChat(NSString *domain, NSString *intent, NSS
  // Empty previous output is valid: NSString hasPrefix:@"" returns NO.
  FOUNDATION_EXPORT NSString * _Nullable TIOAppendDelta(NSString *previous, NSString *current);
  FOUNDATION_EXPORT BOOL TIOIsVoiceExitCommand(NSString *text);
 +// Exact utterances only. Continuous caption capture requires the Turbo prefix.
 +FOUNDATION_EXPORT NSDictionary * _Nullable TIORealtimeVoiceCommand(NSString *text, BOOL requirePrefix);
 +FOUNDATION_EXPORT BOOL TIOHasRealtimeVoicePrefix(NSString *text);
++FOUNDATION_EXPORT NSString * _Nullable TIORealtimeVoiceFragment(NSString *text);
  
  // Response EOF alone never closes a window. A separately observed waiting
  // transition arms this gate. Tokens invalidate stale timers/results on speech.
 diff --git a/official-addon/Core.m b/official-addon/Core.m
-index 9e05dbc..aab9c71 100644
+index 9e05dbc..5272eb8 100644
 --- a/official-addon/Core.m
 +++ b/official-addon/Core.m
 @@ -1,4 +1,5 @@
@@ -307,7 +335,7 @@ index 9e05dbc..aab9c71 100644
      // Exact utterances only. Never use containsString on task or chat content.
      return [@[@"退下吧",@"退下",@"关闭",@"没事了",@"关闭窗口",@"关闭对话",@"结束对话",@"退出对话",@"不用了",@"就这样吧"] containsObject:s];
  }
-@@ -35,6 +39,41 @@ NSString *TIOAppendDelta(NSString *previous, NSString *current) {
+@@ -35,6 +39,57 @@ NSString *TIOAppendDelta(NSString *previous, NSString *current) {
      return [current substringFromIndex:previous.length];
  }
  
@@ -346,10 +374,26 @@ index 9e05dbc..aab9c71 100644
 +    return NO;
 +}
 +
++NSString *TIORealtimeVoiceFragment(NSString *text) {
++    if(![text isKindOfClass:NSString.class]||text.length>4000)return nil;
++    NSString *s=[text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
++    if(TIOHasRealtimeVoicePrefix(s))return s;
++    // Recognition can deliver several sentences in one range. A reserved
++    // prefix may begin a later sentence, but never a quoted/discussed command.
++    NSCharacterSet *boundary=[NSCharacterSet characterSetWithCharactersInString:@".!?。！？\n"];
++    for(NSUInteger i=0;i<s.length;i++){
++        if([boundary characterIsMember:[s characterAtIndex:i]]){
++            NSString *tail=[[s substringFromIndex:i+1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
++            if(TIOHasRealtimeVoicePrefix(tail))return tail;
++        }
++    }
++    return nil;
++}
++
  BOOL TIOIsEligibleChat(NSString *domain, NSString *intent, NSString *sub, BOOL offline, BOOL hasCommand) {
      return [domain isEqual:@"chat"] && [intent isEqual:@"chat"] &&
          [sub isEqual:@"workflow"] && !offline && !hasCommand;
-@@ -48,7 +87,11 @@ NSURL *TIOValidateEndpoint(NSString *input) {
+@@ -48,7 +103,11 @@ NSURL *TIOValidateEndpoint(NSString *input) {
  }
  
  NSString *TIOSystemPrompt(NSString *model) {
@@ -388,7 +432,7 @@ index 75df10a..134d0ae 100644
      // Not an assertion of compatibility with a
      // different firmware: the fresh preview ACK is mandatory every session.
 diff --git a/official-addon/ResearchCatalog.m b/official-addon/ResearchCatalog.m
-index d15363a..d6b27a1 100644
+index d15363a..08b39a4 100644
 --- a/official-addon/ResearchCatalog.m
 +++ b/official-addon/ResearchCatalog.m
 @@ -1,6 +1,20 @@
@@ -406,7 +450,7 @@ index d15363a..d6b27a1 100644
 +        @{@"title":@"Voice controls",@"rows":@[Row(@"exit",@"End conversation by voice",@"mic",0,2)]}];
 +    if([page isEqual:@"diagnostics"])return @[
 +        @{@"title":@"Status",@"rows":@[Row(@"status",@"App compatibility",@"checkmark.shield",0,0)]},
-+        @{@"title":@"Connection",@"rows":@[Row(@"apiTest",@"Test custom API",@"network",0,1)]}];
++        @{@"title":@"Connection",@"rows":@[Row(@"apiTest",@"Test answer provider",@"network",0,1)]}];
 +    return @[];
 +#else
      if([page isEqual:@"model"])return @[
@@ -608,7 +652,7 @@ diff --git a/official-addon/EssentialsPanel.inc b/official-addon/EssentialsPanel
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/EssentialsPanel.inc
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,125 @@
 +// Included by Addon.m so the small settings surface shares its existing
 +// Keychain, request cancellation, and compatibility guards.
 +@interface TIOPanel : UITableViewController
@@ -631,7 +675,7 @@ new file mode 100644
 +- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {return [self.sections[section][@"rows"] count];}
 +- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {return self.sections[section][@"title"];}
 +- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-+    if([self.page isEqual:@"model"]&&section==0)return @"Controls ordinary RayNeo voice answers. Live Cue can also use this custom API, or your connected ChatGPT account.";
++    if([self.page isEqual:@"model"]&&section==0)return @"Choose RayNeo, your ChatGPT account, or a custom API for ordinary voice answers. ChatGPT uses account sign-in; no API key is needed. Live Cue uses ChatGPT when connected, otherwise your custom API.";
 +    if([self.page isEqual:@"model"]&&section==1)return @"On-device captions and translation use the iPhone microphone. Navigation uses Apple Maps. Requires iOS 26 or later.";
 +    if([self.page isEqual:@"model"]&&section==2)return @"Context stays in memory and resets when the app closes.";
 +    if([self.page isEqual:@"voice"]&&section==0)return @"English speech generated on the iPhone. Requires connected Bluetooth headphones or another supported audio output; a glasses display alone cannot play sound.";
@@ -646,7 +690,7 @@ new file mode 100644
 +    cell.textLabel.text=row[@"title"];cell.imageView.image=[UIImage systemImageNamed:row[@"icon"]];
 +    cell.imageView.tintColor=UIColor.systemIndigoColor;cell.accessibilityIdentifier=[@"essentials-" stringByAppendingString:key];
 +    cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;TIOStyleResearchCell(cell);
-+    if([key isEqual:@"mode"])cell.detailTextLabel.text=[Prefs integerForKey:@"mode"]==2?@"Custom API":@"RayNeo";
++    if([key isEqual:@"mode"]){NSInteger mode=[Prefs integerForKey:@"mode"];cell.detailTextLabel.text=mode==3?(TIOChatGPTReady()?@"ChatGPT":@"ChatGPT — sign-in or model needed"):(mode==2?@"Custom API":@"RayNeo");}
 +    if([key isEqual:@"api"])cell.detailTextLabel.text=[Prefs stringForKey:@"model"].length?[Prefs stringForKey:@"model"]:@"Not configured";
 +    if([key isEqual:@"history"])cell.detailTextLabel.text=[NSString stringWithFormat:@"%lu messages in this session",(unsigned long)[Controller.history snapshot].count];
 +    if([key isEqual:@"tts"]||[key isEqual:@"exit"]){
@@ -688,12 +732,17 @@ new file mode 100644
 +- (void)chooseProvider {
 +    UIAlertController *dialog=[UIAlertController alertControllerWithTitle:@"Answer provider" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
 +    __weak typeof(self) weak=self;
-+    [dialog addAction:[UIAlertAction actionWithTitle:@"RayNeo" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){[Controller cancel];[Prefs setInteger:0 forKey:@"mode"];[weak.tableView reloadData];}]];
++    [dialog addAction:[UIAlertAction actionWithTitle:@"RayNeo" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){[Controller cancel];[Controller.history clear];[Prefs setInteger:0 forKey:@"mode"];[weak.tableView reloadData];}]];
++    [dialog addAction:[UIAlertAction actionWithTitle:@"ChatGPT account" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
++        if(!HooksReady){Alert(@"Unavailable",@"This app version does not match the verified voice interface.");return;}
++        [Controller cancel];[Controller.history clear];[Prefs setInteger:3 forKey:@"mode"];[weak.tableView reloadData];
++        if(!TIOChatGPTReady())dispatch_async(dispatch_get_main_queue(),^{if(weak)TIOOpenRealtime(weak,@"chatgpt",^NSDictionary *{NSString *endpoint=[Prefs stringForKey:@"endpoint"]?:@"";return @{@"endpoint":endpoint,@"model":[Prefs stringForKey:@"model"]?:@"",@"key":ReadKey(endpoint)?:@""};});});
++    }]];
 +    [dialog addAction:[UIAlertAction actionWithTitle:@"Custom API" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
 +        NSString *endpoint=[Prefs stringForKey:@"endpoint"]?:@"";
 +        if(!HooksReady){Alert(@"Unavailable",@"This app version does not match the verified voice interface.");return;}
 +        if(!TIOValidateEndpoint(endpoint)||!TIOChatRequest([Prefs stringForKey:@"model"]?:@"",@"Hello")||!ReadKey(endpoint).length){Alert(@"Set up your provider",@"Save your custom API settings first.");return;}
-+        [Controller cancel];[Prefs setInteger:2 forKey:@"mode"];[weak.tableView reloadData];
++        [Controller cancel];[Controller.history clear];[Prefs setInteger:2 forKey:@"mode"];[weak.tableView reloadData];
 +    }]];
 +    [dialog addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
 +    dialog.popoverPresentationController.sourceView=self.view;dialog.popoverPresentationController.sourceRect=CGRectMake(self.view.bounds.size.width/2,100,1,1);
@@ -707,6 +756,7 @@ new file mode 100644
 +    [self presentViewController:dialog animated:YES completion:nil];
 +}
 +- (void)testProvider {
++    if([Prefs integerForKey:@"mode"]==0){Alert(@"RayNeo selected",@"Ask the glasses assistant a question to test RayNeo. Select ChatGPT or Custom API in Assistant to test that connection here.");return;}
 +    [self.testRequest cancel];TIORequest *request=[TIORequest new];self.testRequest=request;
 +    __weak typeof(self) weak=self;__weak TIORequest *expected=request;
 +    request.update=^(NSString *text,BOOL done,NSString *error){
@@ -732,7 +782,7 @@ diff --git a/official-addon/EssentialsTests.m b/official-addon/EssentialsTests.m
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/EssentialsTests.m
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,58 @@
 +#import "Core.h"
 +#import "ResearchCatalog.h"
 +#include <assert.h>
@@ -767,6 +817,13 @@ new file mode 100644
 +        assert(TIOHasRealtimeVoicePrefix(@"Turbo."));
 +        assert(!TIOHasRealtimeVoicePrefix(@"Turbocharged engines"));
 +        assert(!TIOHasRealtimeVoicePrefix(@"Explain the Turbo command"));
++        NSString *attached=TIORealtimeVoiceFragment(@"The captions work. Turbo, stop captions.");
++        assert([TIORealtimeVoiceCommand(attached,YES)[@"page"] isEqual:@"captions"]);
++        assert([TIORealtimeVoiceCommand(TIORealtimeVoiceFragment(@"Testing now! Turbo. Stop translation."),YES)[@"page"] isEqual:@"translate"]);
++        assert([TIORealtimeVoiceCommand(TIORealtimeVoiceFragment(@"字幕正常。特博停止字幕。"),YES)[@"page"] isEqual:@"captions"]);
++        assert(!TIORealtimeVoiceFragment(@"I said Turbo stop captions."));
++        assert(!TIORealtimeVoiceFragment(@"Say the command: Turbo stop captions."));
++        assert(!TIORealtimeVoiceFragment(@"Here is a quote. \"Turbo stop captions\""));
 +        NSSet *removed=[NSSet setWithArray:@[@"agent",@"knowledge",@"navigation",@"capture",@"archive",@"search",@"searchKey",@"searchTest",@"todoTest",@"ttsKey",@"ttsEngine",@"thinking",@"experimentalOTA"]];
 +        NSMutableSet *seen=[NSMutableSet new];
 +        for(NSString *page in @[@"model",@"voice",@"diagnostics"]) {
@@ -1009,7 +1066,7 @@ diff --git a/official-addon/realtime/build.sh b/official-addon/realtime/build.sh
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/build.sh
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,23 @@
 +#!/bin/bash
 +set -euo pipefail
 +cd "$(dirname "$0")/.."
@@ -1019,23 +1076,28 @@ new file mode 100644
 +  -target arm64-apple-ios26.0 -sdk "$sdk" -emit-library -module-name TurboRealtime \
 +  -Xlinker -install_name -Xlinker @rpath/TurboRealtime.dylib -Xlinker -no_fixup_chains \
 +  realtime/RealtimeCore.swift realtime/TokenValidation.swift realtime/LocalSpeech.swift \
++  realtime/LoopbackSignIn.swift realtime/ResponseStream.swift realtime/ChatGPTAnswer.swift \
 +  realtime/ChatGPTAccount.swift realtime/CueService.swift realtime/RealtimeSession.swift \
 +  realtime/AppleNavigation.swift realtime/RealtimePanel.swift \
 +  local-translation/src/CaptionAudioPipeline.swift local-translation/src/MicrophoneInput.swift \
 +  -o build/essentials/TurboRealtime.dylib
 +codesign --force --sign - build/essentials/TurboRealtime.dylib
 +codesign --verify --strict build/essentials/TurboRealtime.dylib
-+xcrun swiftc realtime/RealtimeCore.swift realtime/TokenValidation.swift realtime/RealtimeTests.swift -o build/essentials/realtime-tests
++xcrun swiftc realtime/RealtimeCore.swift realtime/TokenValidation.swift realtime/ResponseStream.swift realtime/RealtimeTests.swift -o build/essentials/realtime-tests
 +build/essentials/realtime-tests
++xcrun swiftc -swift-version 5 realtime/LoopbackSignIn.swift realtime/LoopbackTests.swift -o build/essentials/loopback-tests
++build/essentials/loopback-tests
++python3 realtime/extract-request-test.py
++xcrun clang -DTIO_ESSENTIALS=1 -fobjc-arc -fmodules -framework Foundation -I build/essentials realtime/RequestRoutingTests.m -o build/essentials/request-routing-tests
++build/essentials/request-routing-tests
 diff --git a/official-addon/realtime/ChatGPTAccount.swift b/official-addon/realtime/ChatGPTAccount.swift
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/ChatGPTAccount.swift
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,178 @@
 +import Foundation
 +import UIKit
 +import SafariServices
-+import Network
 +import CryptoKit
 +import Security
 +import Combine
@@ -1049,13 +1111,12 @@ new file mode 100644
 +    @Published private(set) var isSignedIn = false
 +    @Published private(set) var signingIn = false
 +    private var record: [String:Any] = [:]
-+    private var listener: NWListener?
++    private var listener: LoopbackSignIn?
 +    private var safari: SFSafariViewController?
 +    private var callback: CheckedContinuation<URL, Error>?
 +    private var timeout: Task<Void,Never>?
 +    private var refresh: Task<String,Error>?
 +    private var generation = 0
-+    private var expectedState = ""
 +    private let keychain: [String:Any] = [kSecClass as String:kSecClassGenericPassword, kSecAttrService as String:"TurboIORealtime.ChatGPT", kSecAttrAccount as String:"account"]
 +    override private init() {
 +        super.init()
@@ -1101,36 +1162,20 @@ new file mode 100644
 +        defer { if epoch == generation { cleanUpSignIn() } }
 +        do {
 +            let state = try TokenValidation.random(), nonce = try TokenValidation.random(), verifier = try TokenValidation.random()
-+            expectedState = state
 +            let previousClient = record["client_id"] as? String
 +            let client = previousClient ?? "dynamic_agent_client"
 +            let hostKey = "TurboRealtime.ChatGPT.host"
 +            let host = UserDefaults.standard.string(forKey: hostKey) ?? "urn:uuid:"+UUID().uuidString.lowercased()
 +            UserDefaults.standard.set(host, forKey: hostKey)
-+            let parameters = NWParameters.tcp
-+            parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
-+            let server = try NWListener(using: parameters); listener = server
-+            let port: UInt16 = try await withCheckedThrowingContinuation { ready in
-+                var returned = false
-+                server.stateUpdateHandler = { state in
-+                    Task { @MainActor in
-+                    guard !returned else { return }
-+                    switch state {
-+                    case .ready: returned = true; if let port = server.port { ready.resume(returning: port.rawValue) } else { ready.resume(throwing: RealtimeError("No local sign-in port is available.")) }
-+                    case .failed, .cancelled: returned = true; ready.resume(throwing: RealtimeError("The local sign-in listener could not start."))
-+                    default: break
-+                    }
-+                    }
-+                }
-+                server.start(queue: .main)
-+            }
++            let server = LoopbackSignIn(); listener = server
++            let port = try await server.start(state: state, onCallback: { [weak self] url in
++                guard let self, self.generation == epoch else { return }
++                let pending = self.callback; self.callback = nil; pending?.resume(returning: url)
++            }, onFailure: { [weak self] error in
++                guard let self, self.generation == epoch else { return }
++                let pending = self.callback; self.callback = nil; pending?.resume(throwing: error)
++            })
 +            let redirect = "http://127.0.0.1:\(port)/auth/callback"
-+            server.newConnectionHandler = { [weak self] connection in
-+                Task { @MainActor in
-+                connection.start(queue: .main)
-+                self?.receive(connection, data: Data(), redirect: redirect)
-+                }
-+            }
 +            var components = URLComponents(string: "https://auth.openai.com/api/accounts/authorize")!
 +            var fields = ["client_id":client,"ext_agent_host_id":host,"response_type":"code","redirect_uri":redirect,
 +                          "scope":"openid profile email offline_access resource.invoke chatgpt.tokens.use.direct",
@@ -1168,31 +1213,7 @@ new file mode 100644
 +            try save(saved); status = "Connected to ChatGPT"
 +            try await loadModels()
 +        } catch is CancellationError { if !isSignedIn { status = "Sign-in cancelled" } }
-+        catch { status = (error as? RealtimeError)?.message ?? "ChatGPT sign-in could not be verified. Try again." }
-+    }
-+    private func receive(_ connection: NWConnection, data: Data, redirect: String) {
-+        connection.receive(minimumIncompleteLength:1,maximumLength:8192) { [weak self] bytes,_,complete,error in
-+            Task { @MainActor in
-+            guard let self else { connection.cancel(); return }
-+            let all = data+(bytes ?? Data())
-+            guard all.count <= 8192, error == nil else { connection.cancel(); return }
-+            guard let request = String(data: all,encoding:.utf8), request.contains("\r\n\r\n") else {
-+                if !complete { self.receive(connection,data:all,redirect:redirect) } else { connection.cancel() }; return
-+            }
-+            let first = request.components(separatedBy:"\r\n").first?.split(separator:" ") ?? []
-+            let base = URLComponents(string:redirect)!
-+            guard first.count == 3, first[0] == "GET", let url = URL(string:String(first[1]),relativeTo:URL(string:"http://127.0.0.1:\(base.port!)")!)?.absoluteURL,
-+                  url.host == "127.0.0.1", url.port == base.port, url.path == "/auth/callback",
-+                  let items = URLComponents(url:url,resolvingAgainstBaseURL:false)?.queryItems,
-+                  items.filter({$0.name == "state"}).count == 1,
-+                  items.first(where:{$0.name == "state"})?.value == self.expectedState, self.callback != nil else { connection.cancel(); return }
-+            let body = "Sign-in received. Return to Turbo IO."
-+            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nCache-Control: no-store\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
-+            let pending = self.callback; self.callback = nil
-+            connection.send(content:Data(response.utf8),completion:.contentProcessed { _ in connection.cancel() })
-+            pending?.resume(returning:url)
-+            }
-+        }
++        catch { if epoch == generation { status = (error as? RealtimeError)?.message ?? (error as? LoopbackSignIn.Failure)?.message ?? "ChatGPT sign-in could not be verified. Try again." } }
 +    }
 +    private func tokenRequest(_ fields: [String:String]) async throws -> [String:Any] {
 +        var c = URLComponents(); c.queryItems = fields.map { URLQueryItem(name:$0.key,value:$0.value) }
@@ -1252,11 +1273,41 @@ new file mode 100644
 +        status = models.isEmpty ? "Connected, but no models are available" : "Connected to ChatGPT"
 +    }
 +}
+diff --git a/official-addon/realtime/ChatGPTAnswer.swift b/official-addon/realtime/ChatGPTAnswer.swift
+new file mode 100644
+--- /dev/null
++++ b/official-addon/realtime/ChatGPTAnswer.swift
+@@ -0,0 +1,25 @@
++import Foundation
++
++@available(iOS 26.0, *)
++@MainActor final class ChatGPTAnswer: NSObject {
++    private var task: Task<Void, Never>?
++    init(question: String, history: [[String: String]], update: @escaping (String, Bool, String?) -> Void) {
++        super.init()
++        task = Task { @MainActor in
++            do {
++                let account = ChatGPTAccount.shared
++                guard account.isSignedIn else { throw RealtimeError("Open Assistant > ChatGPT account and sign in first.") }
++                guard let model = account.selectedModel, !model.isEmpty else { throw RealtimeError("Choose a model under ChatGPT account first.") }
++                let token = try await account.accessToken()
++                try Task.checkCancellation()
++                let text = try await CueService().streamChatGPT(body: ChatGPTAnswerBody.make(model: model, question: question, history: history), bearer: token, limit: 24000) { text in
++                    guard !Task.isCancelled else { return }; update(text, false, nil)
++                }
++                try Task.checkCancellation(); update(text, true, nil)
++            } catch is CancellationError { }
++            catch { if !Task.isCancelled { update("", true, (error as? RealtimeError)?.message ?? "ChatGPT could not finish this answer. Check the account and connection.") } }
++        }
++    }
++    @objc func cancel() { task?.cancel(); task = nil }
++    deinit { task?.cancel() }
++}
 diff --git a/official-addon/realtime/CueService.swift b/official-addon/realtime/CueService.swift
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/CueService.swift
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,112 @@
 +import Foundation
 +
 +// Redirects must not forward a user's bearer credential to another endpoint.
@@ -1272,6 +1323,33 @@ new file mode 100644
 +        c.urlCache = nil; c.httpCookieStorage = nil
 +        return URLSession(configuration: c, delegate: NoRedirect(), delegateQueue: nil)
 +    }()
++    func streamChatGPT(body: [String: Any], bearer: String, limit: Int, update: @escaping (String) -> Void) async throws -> String {
++        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
++        request.httpMethod = "POST"
++        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
++        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
++        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
++        request.httpBody = try JSONSerialization.data(withJSONObject: body)
++        let (bytes, response) = try await Self.network.bytes(for: request)
++        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
++        guard code == 200 else { throw RealtimeError(code == 401 ? "ChatGPT sign-in expired. Reconnect your account." : "ChatGPT returned HTTP \(code). Check account access and limits.") }
++        var stream = ResponseStream(limit: limit)
++        do {
++            for try await line in bytes.lines {
++                try Task.checkCancellation()
++                guard line.utf8.count <= 65536 else { throw ResponseStream.Failure.oversized }
++                guard line.hasPrefix("data:") else { continue }
++                let payload = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
++                if payload == "[DONE]" { break }
++                guard let data = payload.data(using: .utf8), let event = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
++                let previous = stream.text
++                try stream.ingest(event)
++                if previous != stream.text { update(stream.text) }
++                if stream.completed { break }
++            }
++            return try stream.finish()
++        } catch is ResponseStream.Failure { throw RealtimeError("ChatGPT did not complete this answer. Check your connection and account limits.") }
++    }
 +    func answer(question: String, context: String, language: String, update: @escaping (String) -> Void) async throws -> String {
 +        let provider = TIORealtimeHost.call("provider")
 +        let endpoint = provider["endpoint"] as? String ?? ""
@@ -1288,6 +1366,11 @@ new file mode 100644
 +            guard let selected = ChatGPTAccount.shared.selectedModel, !selected.isEmpty else { throw RealtimeError("Choose a model under ChatGPT account first.") }
 +            url = URL(string: "https://api.openai.com/v1/responses")!
 +            body = ["model": selected, "instructions": instructions, "input": prompt, "stream": true, "store": false]
++            let text = try await streamChatGPT(body: body, bearer: bearer, limit: 4096) { text in
++                let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
++                if !"NO_CUE".hasPrefix(clean), !clean.hasPrefix("NO_CUE") { update(text) }
++            }
++            return text.trimmingCharacters(in: .whitespacesAndNewlines) == "NO_CUE" ? "" : text
 +        } else {
 +            guard let parsed = URL(string: endpoint), parsed.scheme == "https", parsed.host != nil, parsed.user == nil, parsed.password == nil,
 +                  !key.isEmpty, !model.isEmpty else { throw RealtimeError("Sign in with ChatGPT or configure a custom API in Assistant settings.") }
@@ -1337,6 +1420,16 @@ new file mode 100644
 +        return text.trimmingCharacters(in: .whitespacesAndNewlines) == "NO_CUE" ? "" : text
 +    }
 +}
+diff --git a/official-addon/realtime/extract-request-test.py b/official-addon/realtime/extract-request-test.py
+new file mode 100644
+--- /dev/null
++++ b/official-addon/realtime/extract-request-test.py
+@@ -0,0 +1,5 @@
++from pathlib import Path
++source = Path('Addon.m').read_text()
++start = source.index('@interface TIORequest :')
++end = source.index('@interface TIOController :', start)
++Path('build/essentials/TIORequest-under-test.inc').write_text(source[start:end])
 diff --git a/official-addon/realtime/LocalSpeech.swift b/official-addon/realtime/LocalSpeech.swift
 new file mode 100644
 --- /dev/null
@@ -1467,6 +1560,168 @@ new file mode 100644
 +        guard epoch == generation else { return }
 +        generation += 1; microphone.stop(); input?.finish(); input = nil
 +        onFailure?(message)
++    }
++}
+diff --git a/official-addon/realtime/LoopbackSignIn.swift b/official-addon/realtime/LoopbackSignIn.swift
+new file mode 100644
+--- /dev/null
++++ b/official-addon/realtime/LoopbackSignIn.swift
+@@ -0,0 +1,115 @@
++import Foundation
++import Network
++
++// Shared by the iPhone sign-in and a real TCP callback integration test on macOS.
++@MainActor final class LoopbackSignIn {
++    struct Failure: LocalizedError {
++        let message: String
++        var errorDescription: String? { message }
++    }
++    private var listener: NWListener?
++    private var ready: CheckedContinuation<UInt16, Error>?
++    private var startupTimeout: Task<Void, Never>?
++    private var connections: [ObjectIdentifier: (NWConnection, Task<Void, Never>)] = [:]
++    private var callback: ((URL) -> Void)?
++    private var failure: ((Error) -> Void)?
++    private var expectedState = ""
++    private var port: UInt16 = 0
++
++    func start(state: String, onCallback: @escaping (URL) -> Void, onFailure: @escaping (Error) -> Void) async throws -> UInt16 {
++        cancel()
++        expectedState = state; callback = onCallback; failure = onFailure
++        let parameters = NWParameters.tcp
++        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
++        let server = try NWListener(using: parameters)
++        listener = server
++        // Network.framework requires this handler before start(), even before ready.
++        server.newConnectionHandler = { [weak self, weak server] connection in
++            Task { @MainActor in
++                guard let self, let server, self.listener === server, self.connections.count < 8 else { connection.cancel(); return }
++                self.accept(connection)
++            }
++        }
++        server.stateUpdateHandler = { [weak self, weak server] state in
++            Task { @MainActor in
++                guard let self, let server, self.listener === server else { return }
++                switch state {
++                case .ready:
++                    guard let port = server.port else { self.fail(Failure(message: "No local sign-in port is available.")); return }
++                    self.port = port.rawValue
++                    self.startupTimeout?.cancel(); self.startupTimeout = nil
++                    let pending = self.ready; self.ready = nil; pending?.resume(returning: port.rawValue)
++                case .failed(let error):
++                    self.fail(Failure(message: "The local sign-in listener failed (\(error)). Try signing in again."))
++                case .cancelled: self.fail(CancellationError())
++                default: break
++                }
++            }
++        }
++        return try await withCheckedThrowingContinuation { pending in
++            ready = pending
++            startupTimeout = Task { [weak self] in
++                try? await Task.sleep(nanoseconds: 10_000_000_000)
++                guard !Task.isCancelled else { return }
++                self?.fail(Failure(message: "The local sign-in listener timed out. Try again."))
++            }
++            server.start(queue: .main)
++        }
++    }
++    private func fail(_ error: Error) {
++        let pending = ready; ready = nil
++        let notify = failure
++        cancel()
++        if let pending { pending.resume(throwing: error) } else { notify?(error) }
++    }
++    func cancel() {
++        startupTimeout?.cancel(); startupTimeout = nil
++        let server = listener; listener = nil
++        server?.stateUpdateHandler = nil; server?.newConnectionHandler = nil; server?.cancel()
++        for (_, value) in connections { value.1.cancel(); value.0.cancel() }
++        connections.removeAll(); callback = nil; failure = nil
++        let pending = ready; ready = nil; pending?.resume(throwing: CancellationError())
++    }
++    private func finish(_ connection: NWConnection) {
++        connections.removeValue(forKey: ObjectIdentifier(connection))?.1.cancel()
++        connection.cancel()
++    }
++    private func accept(_ connection: NWConnection) {
++        let deadline = Task { [weak self, weak connection] in
++            try? await Task.sleep(nanoseconds: 10_000_000_000)
++            guard !Task.isCancelled, let connection else { return }
++            self?.finish(connection)
++        }
++        connections[ObjectIdentifier(connection)] = (connection, deadline)
++        connection.start(queue: .main)
++        receive(connection, data: Data())
++    }
++    private func receive(_ connection: NWConnection, data: Data) {
++        connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] bytes, _, complete, error in
++            Task { @MainActor in
++                guard let self, self.connections[ObjectIdentifier(connection)] != nil else { connection.cancel(); return }
++                let all = data + (bytes ?? Data())
++                guard all.count <= 8192, error == nil else { self.finish(connection); return }
++                guard let request = String(data: all, encoding: .utf8), request.contains("\r\n\r\n") else {
++                    if complete { self.finish(connection) } else { self.receive(connection, data: all) }; return
++                }
++                let first = request.components(separatedBy: "\r\n").first?.split(separator: " ") ?? []
++                let origin = URL(string: "http://127.0.0.1:\(self.port)")!
++                let url = first.count == 3 && first[0] == "GET" ? URL(string: String(first[1]), relativeTo: origin)?.absoluteURL : nil
++                let items = url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems } ?? []
++                let valid = url?.scheme == "http" && url?.host == "127.0.0.1" && url?.port == Int(self.port) && url?.path == "/auth/callback" && items.filter({ $0.name == "state" }).count == 1 && items.first(where: { $0.name == "state" })?.value == self.expectedState && self.callback != nil
++                let body = valid ? "Sign-in received. Return to Turbo IO." : "Invalid sign-in callback."
++                let response = "HTTP/1.1 \(valid ? "200 OK" : "400 Bad Request")\r\nContent-Type: text/plain\r\nCache-Control: no-store\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
++                let pending = valid ? self.callback : nil
++                if valid { self.callback = nil }
++                connection.send(content: Data(response.utf8), completion: .contentProcessed { [weak self] _ in
++                    Task { @MainActor in
++                        self?.finish(connection)
++                        // Flush the browser response before the caller cancels the listener.
++                        if let url { pending?(url) }
++                    }
++                })
++            }
++        }
++    }
++}
+diff --git a/official-addon/realtime/LoopbackTests.swift b/official-addon/realtime/LoopbackTests.swift
+new file mode 100644
+--- /dev/null
++++ b/official-addon/realtime/LoopbackTests.swift
+@@ -0,0 +1,37 @@
++import Foundation
++
++@main struct LoopbackTests {
++    @MainActor static func main() async throws {
++        let server = LoopbackSignIn()
++        var callbacks: [URL] = []
++        let port = try await server.start(state: "fixture-state", onCallback: { callbacks.append($0) }, onFailure: { fatalError("Listener failed: \($0)") })
++        let configuration = URLSessionConfiguration.ephemeral
++        configuration.timeoutIntervalForRequest = 5
++        let session = URLSession(configuration: configuration)
++        func get(_ target: String) async throws -> Int {
++            let (_, response) = try await session.data(from: URL(string: "http://127.0.0.1:\(port)\(target)")!)
++            return (response as! HTTPURLResponse).statusCode
++        }
++        let wrong = try await get("/auth/callback?state=wrong&code=fake")
++        assert(wrong == 400 && callbacks.isEmpty)
++        let repeated = try await get("/auth/callback?state=fixture-state&state=fixture-state&code=fake")
++        assert(repeated == 400 && callbacks.isEmpty)
++        let badPath = try await get("/different?state=fixture-state&code=fake")
++        assert(badPath == 400 && callbacks.isEmpty)
++        let valid = try await get("/auth/callback?state=fixture-state&code=fixture-code&client_id=fixture-client")
++        try await Task.sleep(nanoseconds: 100_000_000)
++        assert(valid == 200 && callbacks.count == 1)
++        assert(URLComponents(url: callbacks[0], resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "code" })?.value == "fixture-code")
++        let duplicate = try await get("/auth/callback?state=fixture-state&code=again")
++        assert(duplicate == 400 && callbacks.count == 1)
++        server.cancel()
++        // Closing sign-in before ready must resume the pending start, not hang it.
++        let cancel = Task { @MainActor in server.cancel() }
++        do { _ = try await server.start(state: "cancel", onCallback: { _ in fatalError() }, onFailure: { _ in }) } catch is CancellationError { }
++        await cancel.value
++        server.cancel()
++        _ = try await server.start(state: "retry", onCallback: { _ in }, onFailure: { _ in })
++        server.cancel(); session.invalidateAndCancel()
++        print("PASS: real loopback listener startup, HTTP callback, invalid state/path, duplicate rejection, cancellation and retry")
 +    }
 +}
 diff --git a/official-addon/realtime/RealtimeCore.swift b/official-addon/realtime/RealtimeCore.swift
@@ -1601,17 +1856,19 @@ diff --git a/official-addon/realtime/RealtimeHost.h b/official-addon/realtime/Re
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeHost.h
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,7 @@
 +#import <UIKit/UIKit.h>
 +void TIOInstallRealtimeObserver(void);
 +void TIOOpenRealtime(UIViewController *presenter, NSString *page, NSDictionary *(^provider)(void));
 +void TIOHandleRealtimeVoiceCommand(UIViewController *presenter, NSDictionary *command, NSDictionary *(^provider)(void));
 +void TIORealtimeOfficialAudioStarted(void);
++BOOL TIOChatGPTReady(void);
++id TIOStartChatGPTAnswer(NSString *question, NSArray<NSDictionary *> *history, void (^update)(NSString *, BOOL, NSString *));
 diff --git a/official-addon/realtime/RealtimeHost.m b/official-addon/realtime/RealtimeHost.m
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeHost.m
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,114 @@
 +#import "RealtimeHost.h"
 +#import "Core.h"
 +#import "ProtocolContext.h"
@@ -1662,17 +1919,31 @@ new file mode 100644
 +    PreviousMethod=(void *)method_setImplementation(m,(IMP)MethodObserver);
 +    PreviousSend=(void *)method_setImplementation(s,(IMP)EventObserver);
 +}
-+static Class ConfigureRealtime(NSDictionary *(^provider)(void)){
++static Class LoadRealtime(void){
 +    static void *handle;
 +    if(@available(iOS 26.0,*)){
 +        if(!handle)handle=dlopen([[NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"TurboRealtime.dylib"] fileSystemRepresentation],RTLD_NOW|RTLD_LOCAL);
-+        Class bridge=NSClassFromString(@"TIORealtimeHost");SEL configure=NSSelectorFromString(@"configure:");
-+        if(handle&&[bridge respondsToSelector:configure]){
++        if(handle)return NSClassFromString(@"TIORealtimeHost");
++    }
++    return Nil;
++}
++BOOL TIOChatGPTReady(void){
++    Class bridge=LoadRealtime();SEL ready=NSSelectorFromString(@"chatGPTReady");
++    return [bridge respondsToSelector:ready]&&((BOOL(*)(id,SEL))objc_msgSend)(bridge,ready);
++}
++id TIOStartChatGPTAnswer(NSString *question,NSArray<NSDictionary *> *history,void (^update)(NSString *,BOOL,NSString *)){
++    Class bridge=LoadRealtime();SEL start=NSSelectorFromString(@"startChatGPTQuestion:history:update:");
++    if([bridge respondsToSelector:start])return ((id(*)(id,SEL,id,id,id))objc_msgSend)(bridge,start,question,history,[update copy]);
++    return nil;
++}
++static Class ConfigureRealtime(NSDictionary *(^provider)(void)){
++        Class bridge=LoadRealtime();SEL configure=NSSelectorFromString(@"configure:");
++        if([bridge respondsToSelector:configure]){
 +            NSDictionary *(^callback)(NSString *,NSDictionary *)=^NSDictionary *(NSString *op,NSDictionary *args){
 +                if(!NSThread.isMainThread)return @{};
 +                if([op isEqual:@"provider"])return provider?provider():@{};
 +                if([op isEqual:@"parseVoice"])return TIORealtimeVoiceCommand(args[@"text"],YES)?:@{};
-+                if([op isEqual:@"voicePrefix"])return @{@"matched":@(TIOHasRealtimeVoicePrefix(args[@"text"]))};
++                if([op isEqual:@"voicePrefix"]){NSString *fragment=TIORealtimeVoiceFragment(args[@"text"]);return fragment?@{@"matched":@YES,@"text":fragment}:@{@"matched":@NO};}
 +                if([op isEqual:@"status"])return TIOSubtitleNavigationStatus();
 +                if([op isEqual:@"start"]){if(!TIOSubtitleConfirmIdle())return @{};return @{@"sid":TIOSubtitleLiveCaptionStart()?:@""};}
 +                NSString *sid=[args[@"sid"] isKindOfClass:NSString.class]?args[@"sid"]:@"";
@@ -1682,7 +1953,6 @@ new file mode 100644
 +            ((void(*)(id,SEL,id))objc_msgSend)(bridge,configure,[callback copy]);
 +            return bridge;
 +        }
-+    }
 +    return Nil;
 +}
 +static void PresentRealtime(UIViewController *presenter,UIViewController *controller){
@@ -1832,12 +2102,12 @@ new file mode 100644
 +                Text("Uses OpenAI's ChatGPT plan-sharing sign-in. Availability and usage limits depend on your account. This connects Turbo IO directly; it does not read the ChatGPT app's chats or memory.")
 +            }
 +            if account.isSignedIn {
-+                Section("Live Cue model") {
++                Section("ChatGPT model") {
 +                    Picker("Model",selection:$account.selectedModel) {
 +                        ForEach(account.models,id:\.id) { model in Text(model.name).tag(Optional(model.id)) }
 +                    }
 +                    Button("Refresh model list") { Task { do { try await account.loadModels() } catch { account.status = error.localizedDescription } } }
-+                    Text("Choose a fast model for short cues. No model is selected unless your account lists it.").font(.footnote).foregroundStyle(.secondary)
++                    Text("Used for Live Cue and ChatGPT voice answers. Choose ChatGPT under Answer provider for ordinary glasses questions. Only models available to your account are listed.").font(.footnote).foregroundStyle(.secondary)
 +                }
 +                Section { Button("Disconnect ChatGPT",role:.destructive) { account.signOut() } }
 +            }
@@ -1901,7 +2171,7 @@ diff --git a/official-addon/realtime/RealtimeSession.swift b/official-addon/real
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeSession.swift
-@@ -0,0 +1,333 @@
+@@ -0,0 +1,358 @@
 +import Foundation
 +import UIKit
 +import SwiftUI
@@ -1920,6 +2190,12 @@ new file mode 100644
 +    private static var voicePage: String?
 +    @objc(configure:) static func configure(_ callback: @escaping (String, NSDictionary) -> NSDictionary) { self.callback = callback }
 +    static func call(_ operation: String, _ args: [String:Any] = [:]) -> [String:Any] { callback?(operation,args as NSDictionary) as? [String:Any] ?? [:] }
++    @objc(chatGPTReady) static func chatGPTReady() -> Bool {
++        ChatGPTAccount.shared.isSignedIn && !(ChatGPTAccount.shared.selectedModel ?? "").isEmpty
++    }
++    @objc(startChatGPTQuestion:history:update:) static func startChatGPTQuestion(_ question: String, history: [[String: String]], update: @escaping (String, Bool, String?) -> Void) -> NSObject {
++        ChatGPTAnswer(question: question, history: history, update: update)
++    }
 +    @objc(makeController:) static func makeController(_ page: String) -> UIViewController {
 +        if page == "navigate" {
 +            if let existing = navigationController { return existing }
@@ -2067,6 +2343,8 @@ new file mode 100644
 +    private var window = TranscriptWindow()
 +    private var utterance = UtteranceWindow()
 +    private var voiceWindow = VoiceCommandWindow()
++    private var voiceDebounce: Task<Void,Never>?
++    private var voiceRevision = 0
 +    private var latest = ""
 +    private var latestFinal = false
 +    private var completedContext: [String] = []
@@ -2129,6 +2407,7 @@ new file mode 100644
 +    func stop(_ message: String = "Stopped") {
 +        runGeneration += 1; let epoch = runGeneration; revision += 1; running = false; busy = true; status = message
 +        startTask?.cancel(); startTask = nil; debounce?.cancel(); cueTask?.cancel(); translateTask?.cancel()
++        voiceDebounce?.cancel(); voiceDebounce = nil; voiceRevision += 1
 +        debounce = nil; cueTask = nil; translateTask = nil; pendingTranslation = nil
 +        translatedSession?.cancel(); translatedSession = nil
 +        GlassesDisplay.shared.release(id); UIApplication.shared.isIdleTimerDisabled = false
@@ -2137,18 +2416,27 @@ new file mode 100644
 +    func stopAndWait(_ message: String) async { stop(message); await stopTask?.value }
 +    private func receive(_ piece: TranscriptPiece) {
 +        guard running else { return }
-+        let prefixed = TIORealtimeHost.call("voicePrefix",["text":piece.text])["matched"] as? Bool == true
-+        if let control = voiceWindow.ingest(piece,prefixed:prefixed) {
-+            guard piece.final else { return }
++        voiceDebounce?.cancel(); voiceDebounce = nil; voiceRevision += 1
++        let candidate = TIORealtimeHost.call("voicePrefix",["text":piece.text])
++        let prefixed = candidate["matched"] as? Bool == true
++        let voicePiece = TranscriptPiece(start:piece.start,end:piece.end,text:candidate["text"] as? String ?? piece.text,final:piece.final)
++        if let control = voiceWindow.ingest(voicePiece,prefixed:prefixed) {
 +            let command = TIORealtimeHost.call("parseVoice",["text":control])
 +            // An active phone-microphone session only accepts prefixed controls.
 +            // Keep command text out of both translation and the answer provider.
 +            if !command.isEmpty {
-+                voiceWindow.consume(); utterance = UtteranceWindow()
-+                if command["page"] as? String == "navigate", command["action"] as? String != "stop" {
-+                    status = "Stop this live tool, then use the glasses assistant to open navigation."; return
++                if piece.final { performVoice(command) }
++                else if command["action"] as? String == "stop" {
++                    let version = voiceRevision, epoch = runGeneration
++                    status = "Stop command heard…"
++                    voiceDebounce = Task { [weak self] in
++                        try? await Task.sleep(nanoseconds:700_000_000)
++                        guard !Task.isCancelled, let self, self.running,
++                              self.voiceRevision == version, self.runGeneration == epoch else { return }
++                        self.performVoice(command)
++                    }
 +                }
-+                _ = TIORealtimeHost.handleVoiceCommand(command as NSDictionary); return
++                return
 +            }
 +            if !control.isEmpty { status = "Waiting for a complete command: Turbo, stop or Turbo, cue now." }
 +            return
@@ -2178,6 +2466,13 @@ new file mode 100644
 +            if self.mode == .translate { self.queueTranslation(clean, revision:current) }
 +            else if RealtimePolicy.cueCandidate(clean,final:piece.final) { self.generateCue(clean, revision:current) }
 +        }
++    }
++    private func performVoice(_ command: [String:Any]) {
++        voiceWindow.consume(); utterance = UtteranceWindow()
++        if command["page"] as? String == "navigate", command["action"] as? String != "stop" {
++            status = "Stop this live tool, then use the glasses assistant to open navigation."; return
++        }
++        _ = TIORealtimeHost.handleVoiceCommand(command as NSDictionary)
 +    }
 +    func askNow() {
 +        guard running, mode == .cue, !latest.isEmpty else { return }
@@ -2239,7 +2534,7 @@ diff --git a/official-addon/realtime/RealtimeTests.swift b/official-addon/realti
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeTests.swift
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,92 @@
 +import Foundation
 +import CryptoKit
 +
@@ -2303,8 +2598,120 @@ new file mode 100644
 +            do { _ = try TokenValidation.verify(token,jwks:[jwk],audience:audience,nonce:nonce,now:now); fatalError("Accepted invalid token") } catch {}
 +        }
 +        rejects(valid,audience:"different-client"); rejects(valid,nonce:"wrong"); rejects(valid,now:3000)
++        var stream = ResponseStream(limit: 100)
++        try stream.ingest(["type":"response.output_text.delta","delta":"Hello "])
++        try stream.ingest(["type":"response.output_text.delta","delta":"there"])
++        assert(stream.text == "Hello there")
++        do { _ = try stream.finish(); fatalError("Accepted interrupted response") } catch {}
++        try stream.ingest(["type":"response.completed"])
++        let completedText = try stream.finish(); assert(completedText == "Hello there")
++        try stream.ingest(["type":"response.output_text.delta","delta":"late"])
++        assert(stream.text == "Hello there")
++        for type in ["response.failed","response.incomplete","error"] {
++            var failed = ResponseStream(limit: 100)
++            do { try failed.ingest(["type":type]); fatalError("Accepted failed response") } catch {}
++        }
++        var oversized = ResponseStream(limit: 3)
++        do { try oversized.ingest(["type":"response.output_text.delta","delta":"four"]); fatalError("Accepted oversized response") } catch {}
++        var refusal = ResponseStream(limit: 100)
++        try refusal.ingest(["type":"response.refusal.delta","delta":"I cannot help with that."])
++        try refusal.ingest(["type":"response.completed"])
++        let refusalText = try refusal.finish(); assert(refusalText == "I cannot help with that.")
++        let body = ChatGPTAnswerBody.make(model:"fixture-model",question:"Follow-up question",history:[["role":"user","content":"Question"],["role":"assistant","content":"Answer"],["role":"system","content":"untrusted"]])
++        let input = body["input"] as! [[String:String]]
++        assert(body["store"] as? Bool == false && body["stream"] as? Bool == true)
++        assert(input.count == 3 && input.last?["content"] == "Follow-up question")
++        assert(!input.contains { $0["role"] == "system" })
++        print("PASS: ChatGPT response streaming, history, refusals, failure/EOF handling and no-storage payload")
 +        var forged = valid.split(separator:".").map(String.init); forged[1] = TokenValidation.base64URL(Data("{}".utf8)); rejects(forged.joined(separator:"."))
 +        print("PASS: transcript revisions, split voice commands, question triggers, UTF-8 display limits, off-route recovery and ID-token validation")
++    }
++}
+diff --git a/official-addon/realtime/RequestRoutingTests.m b/official-addon/realtime/RequestRoutingTests.m
+new file mode 100644
+--- /dev/null
++++ b/official-addon/realtime/RequestRoutingTests.m
+@@ -0,0 +1,45 @@
++#import <Foundation/Foundation.h>
++#include <assert.h>
++static NSUserDefaults *Prefs;
++static NSUInteger APICalls, AccountCalls, Cancels;
++static NSString *ReceivedQuestion;
++static NSArray *ReceivedHistory;
++static void (^AccountUpdate)(NSString *,BOOL,NSString *);
++@interface FakeAccountRequest : NSObject
++- (void)cancel;
++@end
++@implementation FakeAccountRequest
++- (void)cancel { Cancels++; }
++@end
++static id TIOStartChatGPTAnswer(NSString *question,NSArray *history,void (^update)(NSString *,BOOL,NSString *)) {
++    AccountCalls++;ReceivedQuestion=question;ReceivedHistory=history;AccountUpdate=[update copy];return [FakeAccountRequest new];
++}
++static NSURL *TIOValidateEndpoint(NSString *text){return [NSURL URLWithString:text];}
++static NSString *ReadKey(NSString *host){return @"fixture-key";}
++static NSDictionary *TIOChatRequestWithHistory(NSString *model,NSString *question,NSArray *history){return @{};}
++@interface TIOWebChatRequest : NSObject
++@property(nonatomic,copy) void (^update)(NSString *,BOOL,NSString *);
++- (void)cancel;
++- (void)startEndpoint:(NSURL *)url key:(NSString *)key payload:(NSDictionary *)payload searchKey:(NSString *)searchKey;
++@end
++@implementation TIOWebChatRequest
++- (void)cancel { self.update=nil; }
++- (void)startEndpoint:(NSURL *)url key:(NSString *)key payload:(NSDictionary *)payload searchKey:(NSString *)searchKey { APICalls++;if(self.update)self.update(@"custom reply",YES,nil); }
++@end
++// Generated from the actual Addon.m class, so callback/cancellation tests cover production code.
++#include "TIORequest-under-test.inc"
++int main(void){@autoreleasepool{
++    Prefs=[[NSUserDefaults alloc]initWithSuiteName:@"TurboIO.fixture.tests"];
++    [Prefs setInteger:3 forKey:@"mode"];
++    TIORequest *request=[TIORequest new];request.history=@[@{@"role":@"user",@"content":@"Previous question"}];
++    __block NSUInteger replies=0;request.update=^(NSString *text,BOOL done,NSString *error){assert(!error);replies++;};
++    [request startQuestion:@"Current question"];
++    assert(AccountCalls==1&&APICalls==0&&[ReceivedQuestion isEqual:@"Current question"]&&ReceivedHistory.count==1);
++    AccountUpdate(@"partial",NO,nil);AccountUpdate(@"full reply",YES,nil);assert(replies==2);
++    [request cancel];assert(Cancels==1);AccountUpdate(@"stale",YES,nil);assert(replies==2);
++    [Prefs setInteger:2 forKey:@"mode"];[Prefs setObject:@"https://fixture.example/v1/chat/completions" forKey:@"endpoint"];[Prefs setObject:@"fixture-model" forKey:@"model"];
++    request.update=^(NSString *text,BOOL done,NSString *error){assert([text isEqual:@"custom reply"]&&done&&!error);replies++;};
++    [request startQuestion:@"API question"];assert(APICalls==1&&AccountCalls==1&&replies==3);
++    [Prefs removePersistentDomainForName:@"TurboIO.fixture.tests"];
++    puts("PASS: production request routes ChatGPT/custom API, retains callbacks/history, cancels and suppresses stale replies");
++}return 0;}
+diff --git a/official-addon/realtime/ResponseStream.swift b/official-addon/realtime/ResponseStream.swift
+new file mode 100644
+--- /dev/null
++++ b/official-addon/realtime/ResponseStream.swift
+@@ -0,0 +1,32 @@
++import Foundation
++
++struct ResponseStream {
++    enum Failure: Error { case provider, oversized, incomplete }
++    private(set) var text = ""
++    private(set) var completed = false
++    let limit: Int
++    mutating func ingest(_ event: [String: Any]) throws {
++        guard !completed else { return }
++        switch event["type"] as? String {
++        case "response.output_text.delta": text += event["delta"] as? String ?? ""
++        case "response.refusal.delta": text += event["delta"] as? String ?? ""
++        case "response.completed": completed = true
++        case "response.failed", "response.incomplete", "error": throw Failure.provider
++        default: break
++        }
++        guard text.utf8.count <= limit else { throw Failure.oversized }
++    }
++    func finish() throws -> String {
++        guard completed, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw Failure.incomplete }
++        return text
++    }
++}
++
++enum ChatGPTAnswerBody {
++    static func make(model: String, question: String, history: [[String: String]]) -> [String: Any] {
++        let input = history.suffix(50).filter { ["user", "assistant"].contains($0["role"] ?? "") && !($0["content"] ?? "").isEmpty }
++            .map { ["role": $0["role"]!, "content": String(($0["content"] ?? "").prefix(8000))] }
++            + [["role": "user", "content": String(question.prefix(8000))]]
++        return ["model": model, "instructions": "You are the user's helpful voice assistant on smart glasses. Answer the user's latest question directly in their language. Keep spoken replies concise, normally under 120 words, without markdown. Use prior turns only as conversation context. Be honest about uncertainty and your inability to operate apps or obtain live information without tools.", "input": input, "stream": true, "store": false]
 +    }
 +}
 diff --git a/official-addon/realtime/SubtitleRuntime.m b/official-addon/realtime/SubtitleRuntime.m
