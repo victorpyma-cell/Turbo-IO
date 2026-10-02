@@ -1,5 +1,5 @@
 diff --git a/official-addon/Addon.m b/official-addon/Addon.m
-index eb3958b..5ed13d4 100644
+index eb3958b..571d17f 100644
 --- a/official-addon/Addon.m
 +++ b/official-addon/Addon.m
 @@ -4,17 +4,35 @@
@@ -89,7 +89,7 @@ index eb3958b..5ed13d4 100644
  static BOOL StoreKey(NSString *host,NSString *key) {
      NSDictionary *q=KeyQuery(host);
      if(!key.length){OSStatus s=SecItemDelete((__bridge CFDictionaryRef)q);return s==errSecSuccess||s==errSecItemNotFound;}
-@@ -89,24 +123,44 @@ static UIViewController *TopController(void) {
+@@ -89,24 +123,43 @@ static UIViewController *TopController(void) {
      UIViewController *c=window.rootViewController;while(c.presentedViewController)c=c.presentedViewController;return c;
  }
  static void Alert(NSString *title,NSString *message) {
@@ -110,7 +110,6 @@ index eb3958b..5ed13d4 100644
 +#endif
  - (void)startQuestion:(NSString *)question {
 +#if TIO_ESSENTIALS
-+    void (^callback)(NSString *,BOOL,NSString *)=[self.update copy];[self cancel];self.update=callback;
 +    if([Prefs integerForKey:@"mode"]==3){
 +        __weak typeof(self) weak=self;
 +        _accountRequest=TIOStartChatGPTAnswer(question,_history?:@[],^(NSString *text,BOOL done,NSString *error){typeof(self) strong=weak;if(strong.update)strong.update(text,done,error);});
@@ -135,7 +134,7 @@ index eb3958b..5ed13d4 100644
  }
  @end
  
-@@ -212,8 +266,10 @@ static id CopyResponse(id source,NSString *answer,BOOL final) {
+@@ -212,8 +265,10 @@ static id CopyResponse(id source,NSString *answer,BOOL final) {
          dispatch_after(dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),dispatch_get_main_queue(),^{[self emitText:test done:YES error:nil generation:gen];});
      }else{
          _request=[TIORequest new];__weak typeof(self) weakSelf=self;
@@ -146,7 +145,7 @@ index eb3958b..5ed13d4 100644
          _requestQuestion=[_asr copy];_request.history=[_history snapshot];
          _request.update=^(NSString *text,BOOL done,NSString *error){[weakSelf emitText:text done:done error:error generation:gen];};
          [_request startQuestion:_asr];
-@@ -240,8 +296,23 @@ static id CopyResponse(id source,NSString *answer,BOOL final) {
+@@ -240,8 +295,23 @@ static id CopyResponse(id source,NSString *answer,BOOL final) {
  static void AsrHook(id self,SEL cmd,id text,BOOL final,id sid) {
      NSString *copy=String(text),*session=String(sid);
      void (^work)(void)=^{
@@ -171,7 +170,7 @@ index eb3958b..5ed13d4 100644
          // The official app may reopen its microphone after the answer. Cancel
          // playback only when new recognized user speech arrives.
          if(copy.length&&[Prefs boolForKey:@"ttsEnabled"])[VoiceTTS cancel];
-@@ -252,6 +323,9 @@ static void AsrHook(id self,SEL cmd,id text,BOOL final,id sid) {
+@@ -252,6 +322,9 @@ static void AsrHook(id self,SEL cmd,id text,BOOL final,id sid) {
  }
  static void AudioStartHook(id self,SEL cmd) {
      void (^work)(void)=^{
@@ -181,7 +180,7 @@ index eb3958b..5ed13d4 100644
  #if TIO_MUSIC
          TMMusicPauseForVoice();
  #endif
-@@ -260,13 +334,18 @@ static void AudioStartHook(id self,SEL cmd) {
+@@ -260,13 +333,18 @@ static void AudioStartHook(id self,SEL cmd) {
  }
  static void NlpHook(id self,SEL cmd,id value) {
      // Route decisions on the main queue to serialize ASR, cancellation and stream completion.
@@ -201,7 +200,7 @@ index eb3958b..5ed13d4 100644
  static void AlwaysOnHook(id self,SEL cmd,id value) {
      OriginalAlwaysOn(self,cmd,value);
      if(![Prefs boolForKey:@"captureFinalText"]||![Get(value,@"finish") boolValue])return;
-@@ -458,9 +537,13 @@ static void AlwaysOnHook(id self,SEL cmd,id value) {
+@@ -458,9 +536,13 @@ static void AlwaysOnHook(id self,SEL cmd,id value) {
  }
  @end
  
@@ -216,7 +215,7 @@ index eb3958b..5ed13d4 100644
  UITabBarController *TIOCreateResearchPreview(void){
      Prefs=[[NSUserDefaults alloc]initWithSuiteName:@"io.turboio.research.preview"];
      [Prefs registerDefaults:@{@"mode":@0,@"voiceExitCommands":@YES,@"ttsEnabled":@YES,@"ttsEngine":@"local"}];
-@@ -482,7 +565,15 @@ UITabBarController *TIOCreateResearchPreview(void){
+@@ -482,7 +564,15 @@ UITabBarController *TIOCreateResearchPreview(void){
  @end
  @implementation TIOEntryTarget
  + (void)show {UIViewController *top=TopController();if(!top||top.tabBarController.view.tag==7920||top.view.tag==7920)return;static UITabBarController *shell;
@@ -233,7 +232,7 @@ index eb3958b..5ed13d4 100644
      for(UINavigationController *nav in shell.viewControllers)[nav popToRootViewControllerAnimated:NO];Entry.hidden=YES;[top presentViewController:shell animated:YES completion:nil];}
  @end
  
-@@ -504,7 +595,11 @@ static void AddEntry(void) {
+@@ -504,7 +594,11 @@ static void AddEntry(void) {
      if(top.tabBarController.view.tag==7920||top.view.tag==7920){Entry.hidden=YES;return;}
      if(!Entry){Entry=[UIButton buttonWithType:UIButtonTypeSystem];[Entry setTitle:@"研究" forState:UIControlStateNormal];Entry.accessibilityLabel=@"Turbo IO 私用研究扩展";Entry.backgroundColor=UIColor.systemIndigoColor;[Entry setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];Entry.layer.cornerRadius=20;[Entry addTarget:TIOEntryTarget.class action:@selector(show) forControlEvents:UIControlEventTouchUpInside];}
      Entry.hidden=NO;Entry.frame=CGRectMake(window.bounds.size.width-66,window.safeAreaInsets.top+80,54,40);[window addSubview:Entry];
@@ -245,7 +244,7 @@ index eb3958b..5ed13d4 100644
  }
  __attribute__((constructor)) static void Load(void) {
      // Do not message Foundation/UIKit or create an ObjC autorelease pool under
-@@ -519,6 +614,9 @@ __attribute__((constructor)) static void Load(void) {
+@@ -519,6 +613,9 @@ __attribute__((constructor)) static void Load(void) {
              [Prefs registerDefaults:@{@"voiceExitCommands":@YES,@"ttsEnabled":@YES,@"ttsEngine":@"local"}];
              Controller=[TIOController new];
              ImportPrivateBootstrap();
@@ -255,7 +254,7 @@ index eb3958b..5ed13d4 100644
              VoiceTTS=[[TIOVoiceTTS alloc]initWithKeyProvider:^{return ReadKey(TIOVoiceTTSService());}];
              VoiceTTS.localMode=[[Prefs stringForKey:@"ttsEngine"] isEqual:@"local"];
              TIONewsConfigure(^TIONewsCancel(NSString *prompt,void (^completion)(NSString *,NSString *)){
-@@ -529,20 +627,40 @@ __attribute__((constructor)) static void Load(void) {
+@@ -529,20 +626,40 @@ __attribute__((constructor)) static void Load(void) {
                  __block BOOL cancelled=NO;dispatch_async(dispatch_get_main_queue(),^{if(!cancelled)[request startQuestion:prompt];});
                  return [^{cancelled=YES;[request cancel];} copy];
              });
@@ -2175,7 +2174,7 @@ diff --git a/official-addon/realtime/RealtimeSession.swift b/official-addon/real
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeSession.swift
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,368 @@
 +import Foundation
 +import UIKit
 +import SwiftUI
@@ -2349,6 +2348,7 @@ new file mode 100644
 +    private var voiceWindow = VoiceCommandWindow()
 +    private var voiceDebounce: Task<Void,Never>?
 +    private var voiceRevision = 0
++    private var pendingVoiceStop: String?
 +    private var latest = ""
 +    private var latestFinal = false
 +    private var completedContext: [String] = []
@@ -2411,7 +2411,7 @@ new file mode 100644
 +    func stop(_ message: String = "Stopped") {
 +        runGeneration += 1; let epoch = runGeneration; revision += 1; running = false; busy = true; status = message
 +        startTask?.cancel(); startTask = nil; debounce?.cancel(); cueTask?.cancel(); translateTask?.cancel()
-+        voiceDebounce?.cancel(); voiceDebounce = nil; voiceRevision += 1
++        cancelVoiceStop()
 +        debounce = nil; cueTask = nil; translateTask = nil; pendingTranslation = nil
 +        translatedSession?.cancel(); translatedSession = nil
 +        GlassesDisplay.shared.release(id); UIApplication.shared.isIdleTimerDisabled = false
@@ -2420,7 +2420,6 @@ new file mode 100644
 +    func stopAndWait(_ message: String) async { stop(message); await stopTask?.value }
 +    private func receive(_ piece: TranscriptPiece) {
 +        guard running else { return }
-+        voiceDebounce?.cancel(); voiceDebounce = nil; voiceRevision += 1
 +        let candidate = TIORealtimeHost.call("voicePrefix",["text":piece.text])
 +        let prefixed = candidate["matched"] as? Bool == true
 +        let voicePiece = TranscriptPiece(start:piece.start,end:piece.end,text:candidate["text"] as? String ?? piece.text,final:piece.final)
@@ -2429,8 +2428,12 @@ new file mode 100644
 +            // An active phone-microphone session only accepts prefixed controls.
 +            // Keep command text out of both translation and the answer provider.
 +            if !command.isEmpty {
-+                if piece.final { performVoice(command) }
++                if piece.final { cancelVoiceStop(); performVoice(command) }
 +                else if command["action"] as? String == "stop" {
++                    let signature = command["page"] as? String ?? ""
++                    // Repeated identical partials must not postpone the stop forever.
++                    if pendingVoiceStop == signature, voiceDebounce != nil { return }
++                    cancelVoiceStop(); pendingVoiceStop = signature
 +                    let version = voiceRevision, epoch = runGeneration
 +                    status = "Stop command heard…"
 +                    voiceDebounce = Task { [weak self] in
@@ -2439,12 +2442,14 @@ new file mode 100644
 +                              self.voiceRevision == version, self.runGeneration == epoch else { return }
 +                        self.performVoice(command)
 +                    }
-+                }
++                } else { cancelVoiceStop() }
 +                return
 +            }
++            cancelVoiceStop()
 +            if !control.isEmpty { status = "Waiting for a complete command: Turbo, stop or Turbo, cue now." }
 +            return
 +        }
++        cancelVoiceStop()
 +        let clean = utterance.ingest(piece)
 +        let full = window.ingest(piece)
 +        captions = String(full.suffix(700))
@@ -2471,7 +2476,11 @@ new file mode 100644
 +            else if RealtimePolicy.cueCandidate(clean,final:piece.final) { self.generateCue(clean, revision:current) }
 +        }
 +    }
++    private func cancelVoiceStop() {
++        voiceDebounce?.cancel(); voiceDebounce = nil; pendingVoiceStop = nil; voiceRevision += 1
++    }
 +    private func performVoice(_ command: [String:Any]) {
++        cancelVoiceStop()
 +        voiceWindow.consume(); utterance = UtteranceWindow()
 +        if command["page"] as? String == "navigate", command["action"] as? String != "stop" {
 +            status = "Stop this live tool, then use the glasses assistant to open navigation."; return
@@ -2635,7 +2644,7 @@ diff --git a/official-addon/realtime/RequestRoutingTests.m b/official-addon/real
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RequestRoutingTests.m
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,47 @@
 +#import <Foundation/Foundation.h>
 +#include <assert.h>
 +static NSUserDefaults *Prefs;
@@ -2657,12 +2666,13 @@ new file mode 100644
 +static NSDictionary *TIOChatRequestWithHistory(NSString *model,NSString *question,NSArray *history){return @{};}
 +@interface TIOWebChatRequest : NSObject
 +@property(nonatomic,copy) void (^update)(NSString *,BOOL,NSString *);
++@property(nonatomic) BOOL finished;
 +- (void)cancel;
 +- (void)startEndpoint:(NSURL *)url key:(NSString *)key payload:(NSDictionary *)payload searchKey:(NSString *)searchKey;
 +@end
 +@implementation TIOWebChatRequest
-+- (void)cancel { self.update=nil; }
-+- (void)startEndpoint:(NSURL *)url key:(NSString *)key payload:(NSDictionary *)payload searchKey:(NSString *)searchKey { APICalls++;if(self.update)self.update(@"custom reply",YES,nil); }
++- (void)cancel { self.finished=YES;self.update=nil; }
++- (void)startEndpoint:(NSURL *)url key:(NSString *)key payload:(NSDictionary *)payload searchKey:(NSString *)searchKey { if(self.finished)return;APICalls++;if(self.update)self.update(@"custom reply",YES,nil); }
 +@end
 +// Generated from the actual Addon.m class, so callback/cancellation tests cover production code.
 +#include "TIORequest-under-test.inc"
@@ -2676,6 +2686,7 @@ new file mode 100644
 +    AccountUpdate(@"partial",NO,nil);AccountUpdate(@"full reply",YES,nil);assert(replies==2);
 +    [request cancel];assert(Cancels==1);AccountUpdate(@"stale",YES,nil);assert(replies==2);
 +    [Prefs setInteger:2 forKey:@"mode"];[Prefs setObject:@"https://fixture.example/v1/chat/completions" forKey:@"endpoint"];[Prefs setObject:@"fixture-model" forKey:@"model"];
++    request=[TIORequest new]; // Both providers create a fresh one-shot request per turn.
 +    request.update=^(NSString *text,BOOL done,NSString *error){assert([text isEqual:@"custom reply"]&&done&&!error);replies++;};
 +    [request startQuestion:@"API question"];assert(APICalls==1&&AccountCalls==1&&replies==3);
 +    [Prefs removePersistentDomainForName:@"TurboIO.fixture.tests"];
