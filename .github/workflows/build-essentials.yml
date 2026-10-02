@@ -1,0 +1,66 @@
+name: Build Turbo IO Essentials
+on:
+  workflow_dispatch:
+  push:
+    paths: [TurboIO-essentials-source.patch, .github/workflows/build-essentials.yml]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Apply reviewed essentials source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check TurboIO-essentials-source.patch
+          git apply TurboIO-essentials-source.patch
+          python3 - <<'PY'
+          import pathlib, re, os
+          choices = []
+          for path in pathlib.Path('/Applications').glob('Xcode*.app'):
+              match = re.search(r'Xcode[_-](\d+)\.(\d+)', path.name)
+              if match and int(match[1]) >= 26:
+                  choices.append(((int(match[1]), int(match[2])), path))
+          if not choices: raise SystemExit('Xcode 26 or later is required')
+          path = max(choices)[1] / 'Contents/Developer'
+          with open(os.environ['GITHUB_ENV'], 'a') as f: f.write('DEVELOPER_DIR=' + str(path) + '\n')
+          PY
+      - name: Verify and compile iPhone modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          node --test official-addon/host-compatibility.test.mjs official-addon/macho-embed.test.mjs official-addon/package.test.mjs
+          bash official-addon/test-essentials.sh com.victorpyma.turboio
+          cd official-addon
+          xcrun clang -fobjc-arc -fmodules -framework Foundation -I local-translation local-translation/SubtitleHUDCore.m local-translation/SubtitleHUDTests.m -o build/essentials/subtitle-tests
+          build/essentials/subtitle-tests
+      - name: Package compiled extensions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir artifact
+          cp official-addon/build/essentials/*.dylib LICENSE NOTICE THIRD_PARTY_NOTICES.md artifact/
+          cp TurboIO-essentials-source.patch artifact/
+          python3 - <<'PY'
+          import hashlib, json, pathlib, subprocess, os
+          root=pathlib.Path('artifact')
+          hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in root.glob('*.dylib')}
+          for p in root.glob('*.dylib'):
+              assert subprocess.check_output(['lipo','-archs',str(p)],text=True).strip()=='arm64'
+              subprocess.run(['codesign','--verify','--strict',str(p)],check=True)
+          manifest={'status':'COMPILED_NOT_DEVICE_TESTED','source_commit':'c8815c0b2ff9db3bcdaeeb75abb3ca0e42251efb','fork_commit':os.environ['GITHUB_SHA'],'target_bundle_id':'com.victorpyma.turboio','addon_sha256':hashes['TurboIOPrivateAddon.dylib'],'module_hashes':hashes,'patch_sha256':hashlib.sha256(pathlib.Path('TurboIO-essentials-source.patch').read_bytes()).hexdigest(),'device_tested':False,'minimum_realtime_ios':'26.0','firmware_changes':False}
+          (root/'build-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: turboio-essentials-${{ github.run_id }}
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 7
