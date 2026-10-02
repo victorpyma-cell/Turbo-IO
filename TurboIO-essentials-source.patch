@@ -288,7 +288,7 @@ index 7c92206..add127c 100644
  // Response EOF alone never closes a window. A separately observed waiting
  // transition arms this gate. Tokens invalidate stale timers/results on speech.
 diff --git a/official-addon/Core.m b/official-addon/Core.m
-index 9e05dbc..688b4e8 100644
+index 9e05dbc..aab9c71 100644
 --- a/official-addon/Core.m
 +++ b/official-addon/Core.m
 @@ -1,4 +1,5 @@
@@ -321,7 +321,7 @@ index 9e05dbc..688b4e8 100644
 +    for(NSString *w in [s componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet])if(w.length)[words addObject:w];
 +    s=[words componentsJoinedByString:@" "];
 +    NSString *lower=s.lowercaseString;BOOL prefixed=NO;
-+    for(NSString *prefix in @[@"turbo ",@"turbo,",@"turbo，",@"turbo:",@"特博",@"涡轮"]){
++    for(NSString *prefix in @[@"turbo ",@"turbo,",@"turbo，",@"turbo:",@"turbo.",@"turbo!",@"turbo?",@"特博",@"涡轮"]){
 +        if([lower hasPrefix:prefix]){s=[[s substringFromIndex:prefix.length] stringByTrimmingCharactersInSet:trim];lower=s.lowercaseString;prefixed=YES;break;}
 +    }
 +    if(requirePrefix&&!prefixed)return nil;
@@ -342,7 +342,7 @@ index 9e05dbc..688b4e8 100644
 +    if(![text isKindOfClass:NSString.class])return NO;
 +    NSString *s=[[text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] lowercaseString];
 +    if([s isEqual:@"turbo"])return YES;
-+    for(NSString *prefix in @[@"turbo ",@"turbo,",@"turbo，",@"turbo:",@"特博",@"涡轮"])if([s hasPrefix:prefix])return YES;
++    for(NSString *prefix in @[@"turbo ",@"turbo,",@"turbo，",@"turbo:",@"turbo.",@"turbo!",@"turbo?",@"特博",@"涡轮"])if([s hasPrefix:prefix])return YES;
 +    return NO;
 +}
 +
@@ -732,7 +732,7 @@ diff --git a/official-addon/EssentialsTests.m b/official-addon/EssentialsTests.m
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/EssentialsTests.m
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,51 @@
 +#import "Core.h"
 +#import "ResearchCatalog.h"
 +#include <assert.h>
@@ -757,12 +757,14 @@ new file mode 100644
 +        assert([TIORealtimeVoiceCommand(@"Turbo, navigate to St. Mary's Hospital",YES)[@"query"] isEqual:@"St. Mary's Hospital"]);
 +        assert([TIORealtimeVoiceCommand(@"start navigation",NO)[@"action"] isEqual:@"start"]);
 +        assert([TIORealtimeVoiceCommand(@"Turbo, cue now",YES)[@"action"] isEqual:@"ask"]);
++        assert([TIORealtimeVoiceCommand(@"Turbo. Stop translation.",YES)[@"page"] isEqual:@"translate"]);
 +        for(NSString *text in @[@"",@"start",@"stop",@"Can you start translation?",@"Explain start live cue",@"Do not start captions",@"start translation and send my location",@"Turbo navigate to ",@"Turbocharged start captions",@"I said Turbo stop translation",@"\"start translation\""])
 +            assert(!TIORealtimeVoiceCommand(text,NO));
 +        assert(!TIORealtimeVoiceCommand(@"start translation",YES));
 +        assert(!TIORealtimeVoiceCommand(@"stop listening",YES));
 +        assert(TIOHasRealtimeVoicePrefix(@" Turbo, st"));
 +        assert(TIOHasRealtimeVoicePrefix(@"TURBO"));
++        assert(TIOHasRealtimeVoicePrefix(@"Turbo."));
 +        assert(!TIOHasRealtimeVoicePrefix(@"Turbocharged engines"));
 +        assert(!TIOHasRealtimeVoicePrefix(@"Explain the Turbo command"));
 +        NSSet *removed=[NSSet setWithArray:@[@"agent",@"knowledge",@"navigation",@"capture",@"archive",@"search",@"searchKey",@"searchTest",@"todoTest",@"ttsKey",@"ttsEngine",@"thinking",@"experimentalOTA"]];
@@ -807,7 +809,7 @@ diff --git a/official-addon/realtime/AppleNavigation.swift b/official-addon/real
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/AppleNavigation.swift
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,195 @@
 +import Foundation
 +import MapKit
 +import CoreLocation
@@ -851,6 +853,8 @@ new file mode 100644
 +    func findPlaces() async {
 +        let text = query.trimmingCharacters(in:.whitespacesAndNewlines)
 +        guard !text.isEmpty, text.count <= 300 else { return }
++        // A new search must not leave the old destination eligible for voice start.
++        destination = nil; places = []
 +        searchEpoch += 1; let epoch = searchEpoch; search?.cancel(); busy = true
 +        let request = MKLocalSearch.Request(); request.naturalLanguageQuery = text
 +        if let location { request.region = MKCoordinateRegion(center:location.coordinate,latitudinalMeters:30000,longitudinalMeters:30000) }
@@ -953,13 +957,15 @@ new file mode 100644
 +        }
 +    }
 +    private func updateProgress(_ fix: CLLocation) {
-+        guard let projection = RouteGeometry.project(xy(fix.coordinate),points:points,previous:lastProgress,lookAhead:walking ? 500 : 2000) else { return }
-+        if projection.distance > max(walking ? 45 : 65,fix.horizontalAccuracy*1.5) {
++        let projection = RouteGeometry.project(xy(fix.coordinate),points:points,previous:lastProgress,lookAhead:walking ? 500 : 2000)
++        if RouteGeometry.needsReroute(projection,accuracy:fix.horizontalAccuracy,walking:walking) {
 +            offRouteCount += 1; status = "Off route · checking position"
++            instruction = "Checking route…"; distance = ""
 +            GlassesDisplay.shared.update("Off route\nChecking position…",owner:id)
 +            if offRouteCount >= 3 && Date().timeIntervalSince(lastReroute) >= 30 { lastReroute = Date(); Task { await calculate(from:fix) } }
 +            return
 +        }
++        guard let projection else { return }
 +        offRouteCount = 0
 +        let progress = max(lastProgress ?? 0,projection.progress); lastProgress = progress
 +        if let destination, progress > routeLength-40, fix.distance(from:CLLocation(latitude:destination.placemark.coordinate.latitude,longitude:destination.placemark.coordinate.longitude)) < max(20,min(35,fix.horizontalAccuracy)) {
@@ -1445,7 +1451,7 @@ diff --git a/official-addon/realtime/RealtimeCore.swift b/official-addon/realtim
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeCore.swift
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,123 @@
 +import Foundation
 +
 +// Pure policy shared with the macOS replay tests. No microphone or network here.
@@ -1516,12 +1522,41 @@ new file mode 100644
 +    }
 +}
 +
++// Speech can finalize "Turbo," separately from "stop translation". Keep a
++// short command window independent of sentence punctuation and normal captions.
++struct VoiceCommandWindow {
++    private var window = TranscriptWindow()
++    private var began: Double?
++    private var lastEnd = 0.0
++    private var consumedEnd = -1.0
++    mutating func ingest(_ piece: TranscriptPiece, prefixed: Bool) -> String? {
++        guard piece.start.isFinite, piece.end.isFinite, piece.end >= piece.start else { return nil }
++        if piece.end <= consumedEnd + 0.001 { return "" }
++        if let began, piece.start > lastEnd + 1.2 || piece.end - began > 6 {
++            self.began = nil; window.reset()
++        }
++        if began == nil {
++            guard prefixed else { return nil }
++            began = piece.start; window.reset()
++        }
++        lastEnd = max(lastEnd,piece.end)
++        return window.ingest(piece)
++    }
++    mutating func consume() {
++        consumedEnd = lastEnd; began = nil; window.reset()
++    }
++}
++
 +struct XY: Equatable { let x: Double; let y: Double }
 +struct RouteProjection {
 +    let distance: Double
 +    let progress: Double
 +}
 +enum RouteGeometry {
++    static func needsReroute(_ projection: RouteProjection?, accuracy: Double, walking: Bool) -> Bool {
++        guard let projection else { return true }
++        return projection.distance > max(walking ? 45 : 65,accuracy*1.5)
++    }
 +    static func project(_ p: XY, points: [XY], previous: Double?, lookAhead: Double) -> RouteProjection? {
 +        guard points.count > 1 else { return nil }
 +        var cumulative = 0.0
@@ -1716,7 +1751,7 @@ new file mode 100644
 +            }
 +            Section("Voice commands") {
 +                Text("Wake the glasses assistant, then say start Live Cue, start translation, or start captions. Keep RayNeo AI open on the iPhone. Prepare languages and your answer provider first.")
-+                Text("While listening here, say Turbo, stop translation; Turbo, stop captions; Turbo, stop Live Cue; or Turbo, stop. Say Turbo, cue now to ask about the current question. Use the spoken language selected above.")
++                Text("While listening in English, say Turbo, stop translation; Turbo, stop captions; Turbo, stop Live Cue; or Turbo, stop. Say Turbo, cue now for the current question. Chinese controls include 特博停止翻译 and 特博停止. Other speech languages use the on-screen controls.")
 +            }.font(.footnote)
 +            Section { Text("One glasses session at a time, up to 20 minutes. Starting the glasses voice assistant ends the current Turbo session. Leaving this page ends the session; audio or connection interruptions also stop it.").font(.footnote).foregroundStyle(.secondary) }
 +        }
@@ -1844,7 +1879,7 @@ diff --git a/official-addon/realtime/RealtimeSession.swift b/official-addon/real
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeSession.swift
-@@ -0,0 +1,328 @@
+@@ -0,0 +1,333 @@
 +import Foundation
 +import UIKit
 +import SwiftUI
@@ -1989,8 +2024,12 @@ new file mode 100644
 +@available(iOS 26.0, *)
 +@MainActor final class RealtimeSession: ObservableObject {
 +    @Published var mode: LiveMode = .cue
-+    @Published var source = UserDefaults.standard.string(forKey:"TurboRealtime.source") ?? "en-US"
-+    @Published var target = UserDefaults.standard.string(forKey:"TurboRealtime.target") ?? "es"
++    @Published var source = UserDefaults.standard.string(forKey:"TurboRealtime.source") ?? "en-US" {
++        didSet { UserDefaults.standard.set(source,forKey:"TurboRealtime.source") }
++    }
++    @Published var target = UserDefaults.standard.string(forKey:"TurboRealtime.target") ?? "es" {
++        didSet { UserDefaults.standard.set(target,forKey:"TurboRealtime.target") }
++    }
 +    @Published var languages: [String] = []
 +    @Published var translationLanguages: [String] = []
 +    @Published var captions = ""
@@ -2005,6 +2044,7 @@ new file mode 100644
 +    private var revision = 0
 +    private var window = TranscriptWindow()
 +    private var utterance = UtteranceWindow()
++    private var voiceWindow = VoiceCommandWindow()
 +    private var latest = ""
 +    private var latestFinal = false
 +    private var completedContext: [String] = []
@@ -2050,7 +2090,7 @@ new file mode 100644
 +                }
 +                try Task.checkCancellation()
 +                try GlassesDisplay.shared.acquire(id,enabled:showOnGlasses) { [weak self] message in self?.stop(message) }
-+                window.reset(); utterance = UtteranceWindow(); closedRanges.removeAll(); completedContext.removeAll(); latest = ""; captions = ""; output = ""; lastSubmitted = ""
++                window.reset(); utterance = UtteranceWindow(); voiceWindow = VoiceCommandWindow(); closedRanges.removeAll(); completedContext.removeAll(); latest = ""; captions = ""; output = ""; lastSubmitted = ""; timing = ""
 +                speech.onText = { [weak self] piece in self?.receive(piece) }
 +                speech.onFailure = { [weak self] message in self?.stop(message) }
 +                // Permit results as soon as the engine starts.
@@ -2058,7 +2098,6 @@ new file mode 100644
 +                try await speech.start(language:source)
 +                guard epoch == runGeneration, !Task.isCancelled else { throw CancellationError() }
 +                busy = false; status = "Listening · iPhone microphone · on-device speech"
-+                UserDefaults.standard.set(source,forKey:"TurboRealtime.source"); UserDefaults.standard.set(target,forKey:"TurboRealtime.target")
 +                UIApplication.shared.isIdleTimerDisabled = true
 +            } catch {
 +                if epoch == runGeneration { stop(error is CancellationError ? "Stopped" : error.localizedDescription) }
@@ -2076,22 +2115,23 @@ new file mode 100644
 +    func stopAndWait(_ message: String) async { stop(message); await stopTask?.value }
 +    private func receive(_ piece: TranscriptPiece) {
 +        guard running else { return }
-+        let clean = utterance.ingest(piece)
-+        if TIORealtimeHost.call("voicePrefix",["text":clean])["matched"] as? Bool == true {
++        let prefixed = TIORealtimeHost.call("voicePrefix",["text":piece.text])["matched"] as? Bool == true
++        if let control = voiceWindow.ingest(piece,prefixed:prefixed) {
 +            guard piece.final else { return }
-+            let command = TIORealtimeHost.call("parseVoice",["text":clean])
++            let command = TIORealtimeHost.call("parseVoice",["text":control])
 +            // An active phone-microphone session only accepts prefixed controls.
 +            // Keep command text out of both translation and the answer provider.
 +            if !command.isEmpty {
-+                utterance = UtteranceWindow()
++                voiceWindow.consume(); utterance = UtteranceWindow()
 +                if command["page"] as? String == "navigate", command["action"] as? String != "stop" {
 +                    status = "Stop this live tool, then use the glasses assistant to open navigation."; return
 +                }
 +                _ = TIORealtimeHost.handleVoiceCommand(command as NSDictionary); return
 +            }
-+            status = "Voice command not recognized. Try Turbo, stop or Turbo, cue now."
-+            utterance = UtteranceWindow(); return
++            if !control.isEmpty { status = "Waiting for a complete command: Turbo, stop or Turbo, cue now." }
++            return
 +        }
++        let clean = utterance.ingest(piece)
 +        let full = window.ingest(piece)
 +        captions = String(full.suffix(700))
 +        if piece.final && !piece.text.isEmpty && !closedRanges.contains(piece.start) {
@@ -2177,7 +2217,7 @@ diff --git a/official-addon/realtime/RealtimeTests.swift b/official-addon/realti
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeTests.swift
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,67 @@
 +import Foundation
 +import CryptoKit
 +
@@ -2200,11 +2240,28 @@ new file mode 100644
 +        assert(utterance.ingest(.init(start:1.1,end:2,text:"how this works?",final:false)) == "Can you tell me how this works?")
 +        assert(utterance.ingest(.init(start:1.1,end:2,text:"how this works?",final:true)) == "Can you tell me how this works?")
 +        assert(utterance.ingest(.init(start:3,end:4,text:"Next question",final:false)) == "Next question")
++        var commands = VoiceCommandWindow()
++        assert(commands.ingest(.init(start:0,end:1,text:"Ordinary speech",final:true),prefixed:false) == nil)
++        assert(commands.ingest(.init(start:1.1,end:1.5,text:"Turbo,",final:true),prefixed:true) == "Turbo,")
++        assert(commands.ingest(.init(start:1.6,end:2,text:"stop translating",final:false),prefixed:false) == "Turbo, stop translating")
++        assert(commands.ingest(.init(start:1.6,end:2.1,text:"stop translation",final:true),prefixed:false) == "Turbo, stop translation")
++        commands.consume()
++        assert(commands.ingest(.init(start:1.6,end:2.1,text:"stop translation",final:true),prefixed:false) == "")
++        assert(commands.ingest(.init(start:2.2,end:3,text:"Conversation resumes",final:true),prefixed:false) == nil)
++        _ = commands.ingest(.init(start:4,end:4.5,text:"Turbo,",final:true),prefixed:true)
++        assert(commands.ingest(.init(start:6,end:7,text:"unrelated speech",final:true),prefixed:false) == nil)
++        _ = commands.ingest(.init(start:8,end:8.5,text:"Turbo,",final:true),prefixed:true)
++        assert(commands.ingest(.init(start:8.6,end:15,text:"very long discussion",final:true),prefixed:false) == nil)
 +        let line = [XY(x:0,y:0),XY(x:100,y:0),XY(x:100,y:100)]
 +        let projection = RouteGeometry.project(XY(x:75,y:5),points:line,previous:20,lookAhead:150)!
 +        assert(abs(projection.progress-75)<0.001 && abs(projection.distance-5)<0.001)
 +        assert(RouteGeometry.project(XY(x:100,y:90),points:line,previous:10,lookAhead:30) == nil)
 +        assert(RouteGeometry.project(XY(x:0,y:0),points:[],previous:nil,lookAhead:100) == nil)
++        let behind = RouteGeometry.project(XY(x:5,y:0),points:line,previous:190,lookAhead:100)
++        assert(behind == nil)
++        assert(RouteGeometry.needsReroute(behind,accuracy:10,walking:true))
++        assert(!RouteGeometry.needsReroute(projection,accuracy:10,walking:true))
++        assert(RouteGeometry.needsReroute(.init(distance:80,progress:10),accuracy:10,walking:false))
 +
 +        // Reject forged, expired, wrong-audience and wrong-nonce ID tokens.
 +        let key = P256.Signing.PrivateKey()
@@ -2225,7 +2282,7 @@ new file mode 100644
 +        }
 +        rejects(valid,audience:"different-client"); rejects(valid,nonce:"wrong"); rejects(valid,now:3000)
 +        var forged = valid.split(separator:".").map(String.init); forged[1] = TokenValidation.base64URL(Data("{}".utf8)); rejects(forged.joined(separator:"."))
-+        print("PASS: transcript revisions, question triggers, UTF-8 display limits, route geometry and ID-token validation")
++        print("PASS: transcript revisions, split voice commands, question triggers, UTF-8 display limits, off-route recovery and ID-token validation")
 +    }
 +}
 diff --git a/official-addon/realtime/SubtitleRuntime.m b/official-addon/realtime/SubtitleRuntime.m
