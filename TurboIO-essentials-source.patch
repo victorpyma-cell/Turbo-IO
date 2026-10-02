@@ -1,5 +1,5 @@
 diff --git a/official-addon/Addon.m b/official-addon/Addon.m
-index eb3958b..427aaeb 100644
+index eb3958b..742dbe9 100644
 --- a/official-addon/Addon.m
 +++ b/official-addon/Addon.m
 @@ -4,17 +4,35 @@
@@ -126,7 +126,42 @@ index eb3958b..427aaeb 100644
          _requestQuestion=[_asr copy];_request.history=[_history snapshot];
          _request.update=^(NSString *text,BOOL done,NSString *error){[weakSelf emitText:text done:done error:error generation:gen];};
          [_request startQuestion:_asr];
-@@ -260,13 +301,18 @@ static void AudioStartHook(id self,SEL cmd) {
+@@ -240,8 +281,23 @@ static id CopyResponse(id source,NSString *answer,BOOL final) {
+ static void AsrHook(id self,SEL cmd,id text,BOOL final,id sid) {
+     NSString *copy=String(text),*session=String(sid);
+     void (^work)(void)=^{
+-        if(final&&[Prefs boolForKey:@"voiceExitCommands"]&&TIOIsVoiceExitCommand(copy)&&[Controller exitVoice])return;
+         if(Controller.voiceExited)return;
++#if TIO_ESSENTIALS
++        NSDictionary *command=final?TIORealtimeVoiceCommand(copy,NO):nil;
++        if(command&&VoiceExitReady){
++            if([Controller exitVoice]){
++                BOOL stop=[command[@"action"] isEqual:@"stop"];
++                if(!stop&&UIApplication.sharedApplication.applicationState!=UIApplicationStateActive){
++                    Diagnostic=@"Voice launch needs RayNeo AI open on the iPhone.";
++                    __block id observer=nil;observer=[NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){[NSNotificationCenter.defaultCenter removeObserver:observer];observer=nil;Alert(@"Voice command",@"Keep RayNeo AI open, wake the glasses assistant, and repeat the command. No recording was started.");}];
++                    return;
++                }
++                TIOHandleRealtimeVoiceCommand(TopController(),command,^NSDictionary *{NSString *endpoint=[Prefs stringForKey:@"endpoint"]?:@"";return @{@"endpoint":endpoint,@"model":[Prefs stringForKey:@"model"]?:@"",@"key":ReadKey(endpoint)?:@""};});
++                Diagnostic=@"Turbo voice command routed; see the live tool status.";return;
++            }
++        }
++#endif
++        if(final&&[Prefs boolForKey:@"voiceExitCommands"]&&TIOIsVoiceExitCommand(copy)&&[Controller exitVoice])return;
+         // The official app may reopen its microphone after the answer. Cancel
+         // playback only when new recognized user speech arrives.
+         if(copy.length&&[Prefs boolForKey:@"ttsEnabled"])[VoiceTTS cancel];
+@@ -252,6 +308,9 @@ static void AsrHook(id self,SEL cmd,id text,BOOL final,id sid) {
+ }
+ static void AudioStartHook(id self,SEL cmd) {
+     void (^work)(void)=^{
++#if TIO_ESSENTIALS
++        TIORealtimeOfficialAudioStarted();
++#endif
+ #if TIO_MUSIC
+         TMMusicPauseForVoice();
+ #endif
+@@ -260,13 +319,18 @@ static void AudioStartHook(id self,SEL cmd) {
  }
  static void NlpHook(id self,SEL cmd,id value) {
      // Route decisions on the main queue to serialize ASR, cancellation and stream completion.
@@ -146,7 +181,7 @@ index eb3958b..427aaeb 100644
  static void AlwaysOnHook(id self,SEL cmd,id value) {
      OriginalAlwaysOn(self,cmd,value);
      if(![Prefs boolForKey:@"captureFinalText"]||![Get(value,@"finish") boolValue])return;
-@@ -458,9 +504,13 @@ static void AlwaysOnHook(id self,SEL cmd,id value) {
+@@ -458,9 +522,13 @@ static void AlwaysOnHook(id self,SEL cmd,id value) {
  }
  @end
  
@@ -161,7 +196,7 @@ index eb3958b..427aaeb 100644
  UITabBarController *TIOCreateResearchPreview(void){
      Prefs=[[NSUserDefaults alloc]initWithSuiteName:@"io.turboio.research.preview"];
      [Prefs registerDefaults:@{@"mode":@0,@"voiceExitCommands":@YES,@"ttsEnabled":@YES,@"ttsEngine":@"local"}];
-@@ -482,7 +532,15 @@ UITabBarController *TIOCreateResearchPreview(void){
+@@ -482,7 +550,15 @@ UITabBarController *TIOCreateResearchPreview(void){
  @end
  @implementation TIOEntryTarget
  + (void)show {UIViewController *top=TopController();if(!top||top.tabBarController.view.tag==7920||top.view.tag==7920)return;static UITabBarController *shell;
@@ -178,7 +213,7 @@ index eb3958b..427aaeb 100644
      for(UINavigationController *nav in shell.viewControllers)[nav popToRootViewControllerAnimated:NO];Entry.hidden=YES;[top presentViewController:shell animated:YES completion:nil];}
  @end
  
-@@ -504,7 +562,11 @@ static void AddEntry(void) {
+@@ -504,7 +580,11 @@ static void AddEntry(void) {
      if(top.tabBarController.view.tag==7920||top.view.tag==7920){Entry.hidden=YES;return;}
      if(!Entry){Entry=[UIButton buttonWithType:UIButtonTypeSystem];[Entry setTitle:@"研究" forState:UIControlStateNormal];Entry.accessibilityLabel=@"Turbo IO 私用研究扩展";Entry.backgroundColor=UIColor.systemIndigoColor;[Entry setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];Entry.layer.cornerRadius=20;[Entry addTarget:TIOEntryTarget.class action:@selector(show) forControlEvents:UIControlEventTouchUpInside];}
      Entry.hidden=NO;Entry.frame=CGRectMake(window.bounds.size.width-66,window.safeAreaInsets.top+80,54,40);[window addSubview:Entry];
@@ -190,7 +225,7 @@ index eb3958b..427aaeb 100644
  }
  __attribute__((constructor)) static void Load(void) {
      // Do not message Foundation/UIKit or create an ObjC autorelease pool under
-@@ -519,6 +581,9 @@ __attribute__((constructor)) static void Load(void) {
+@@ -519,6 +599,9 @@ __attribute__((constructor)) static void Load(void) {
              [Prefs registerDefaults:@{@"voiceExitCommands":@YES,@"ttsEnabled":@YES,@"ttsEngine":@"local"}];
              Controller=[TIOController new];
              ImportPrivateBootstrap();
@@ -200,7 +235,7 @@ index eb3958b..427aaeb 100644
              VoiceTTS=[[TIOVoiceTTS alloc]initWithKeyProvider:^{return ReadKey(TIOVoiceTTSService());}];
              VoiceTTS.localMode=[[Prefs stringForKey:@"ttsEngine"] isEqual:@"local"];
              TIONewsConfigure(^TIONewsCancel(NSString *prompt,void (^completion)(NSString *,NSString *)){
-@@ -529,20 +594,35 @@ __attribute__((constructor)) static void Load(void) {
+@@ -529,20 +612,35 @@ __attribute__((constructor)) static void Load(void) {
                  __block BOOL cancelled=NO;dispatch_async(dispatch_get_main_queue(),^{if(!cancelled)[request startQuestion:prompt];});
                  return [^{cancelled=YES;[request cancel];} copy];
              });
@@ -238,8 +273,22 @@ index eb3958b..427aaeb 100644
              NSMutableString *loadInfo=[NSMutableString stringWithFormat:@"setup reached; hooks=%d; version=%d; voiceClass=%d; alwaysOnClass=%d\n",valid,VersionMatches(),voice!=Nil,ao!=Nil];
              [loadInfo appendFormat:@"bundle=%@; version=%@; build=%@\n",NSBundle.mainBundle.bundleIdentifier,[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"]];
              for(uint32_t i=0;i<_dyld_image_count();i++){const char *name=_dyld_get_image_name(i);if(name&&[[NSString stringWithUTF8String:name].lastPathComponent isEqual:@"Runner"]){const struct mach_header *h=_dyld_get_image_header(i);[loadInfo appendFormat:@"Runner image index=%u magic=%x\n",i,h->magic];}}
+diff --git a/official-addon/Core.h b/official-addon/Core.h
+index 7c92206..add127c 100644
+--- a/official-addon/Core.h
++++ b/official-addon/Core.h
+@@ -16,6 +16,9 @@ FOUNDATION_EXPORT BOOL TIOIsEligibleChat(NSString *domain, NSString *intent, NSS
+ // Empty previous output is valid: NSString hasPrefix:@"" returns NO.
+ FOUNDATION_EXPORT NSString * _Nullable TIOAppendDelta(NSString *previous, NSString *current);
+ FOUNDATION_EXPORT BOOL TIOIsVoiceExitCommand(NSString *text);
++// Exact utterances only. Continuous caption capture requires the Turbo prefix.
++FOUNDATION_EXPORT NSDictionary * _Nullable TIORealtimeVoiceCommand(NSString *text, BOOL requirePrefix);
++FOUNDATION_EXPORT BOOL TIOHasRealtimeVoicePrefix(NSString *text);
+ 
+ // Response EOF alone never closes a window. A separately observed waiting
+ // transition arms this gate. Tokens invalidate stale timers/results on speech.
 diff --git a/official-addon/Core.m b/official-addon/Core.m
-index 9e05dbc..fb5f936 100644
+index 9e05dbc..688b4e8 100644
 --- a/official-addon/Core.m
 +++ b/official-addon/Core.m
 @@ -1,4 +1,5 @@
@@ -258,7 +307,49 @@ index 9e05dbc..fb5f936 100644
      // Exact utterances only. Never use containsString on task or chat content.
      return [@[@"退下吧",@"退下",@"关闭",@"没事了",@"关闭窗口",@"关闭对话",@"结束对话",@"退出对话",@"不用了",@"就这样吧"] containsObject:s];
  }
-@@ -48,7 +52,11 @@ NSURL *TIOValidateEndpoint(NSString *input) {
+@@ -35,6 +39,41 @@ NSString *TIOAppendDelta(NSString *previous, NSString *current) {
+     return [current substringFromIndex:previous.length];
+ }
+ 
++NSDictionary *TIORealtimeVoiceCommand(NSString *text, BOOL requirePrefix) {
++    if(![text isKindOfClass:NSString.class]||!text.length||text.length>320)return nil;
++    NSMutableCharacterSet *trim=[NSCharacterSet.whitespaceAndNewlineCharacterSet mutableCopy];
++    [trim addCharactersInString:@",.!?;:，。！？；："];
++    NSString *s=[text stringByTrimmingCharactersInSet:trim];
++    if([s hasPrefix:@"小雷小雷"])s=[[s substringFromIndex:4] stringByTrimmingCharactersInSet:trim];
++    NSMutableArray *words=[NSMutableArray new];
++    for(NSString *w in [s componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet])if(w.length)[words addObject:w];
++    s=[words componentsJoinedByString:@" "];
++    NSString *lower=s.lowercaseString;BOOL prefixed=NO;
++    for(NSString *prefix in @[@"turbo ",@"turbo,",@"turbo，",@"turbo:",@"特博",@"涡轮"]){
++        if([lower hasPrefix:prefix]){s=[[s substringFromIndex:prefix.length] stringByTrimmingCharactersInSet:trim];lower=s.lowercaseString;prefixed=YES;break;}
++    }
++    if(requirePrefix&&!prefixed)return nil;
++    NSDictionary *starts=@{@"start live cue":@"liveCue",@"start live queue":@"liveCue",@"start translation":@"translate",@"start translating":@"translate",@"start captions":@"captions",@"start live captions":@"captions",@"start navigation":@"navigate",@"开始实时提示":@"liveCue",@"开始翻译":@"translate",@"开始字幕":@"captions",@"开始导航":@"navigate"};
++    NSDictionary *stops=@{@"stop live cue":@"liveCue",@"stop live queue":@"liveCue",@"stop translation":@"translate",@"stop translating":@"translate",@"stop captions":@"captions",@"stop live captions":@"captions",@"stop navigation":@"navigate",@"end navigation":@"navigate",@"停止实时提示":@"liveCue",@"停止翻译":@"translate",@"停止字幕":@"captions",@"停止导航":@"navigate"};
++    if(starts[lower])return @{@"action":@"start",@"page":starts[lower]};
++    if(stops[lower])return @{@"action":@"stop",@"page":stops[lower]};
++    if(prefixed&&[@[@"stop",@"stop listening",@"停止"] containsObject:lower])return @{@"action":@"stop",@"page":@"all"};
++    if([@[@"cue now",@"answer this question",@"立即提示"] containsObject:lower])return @{@"action":@"ask",@"page":@"liveCue"};
++    if([@[@"open navigation",@"打开导航"] containsObject:lower])return @{@"action":@"open",@"page":@"navigate"};
++    // Destination text remains user data. Never infer or automatically select a place.
++    for(NSString *prefix in @[@"navigate to ",@"导航到"]){
++        if([lower hasPrefix:prefix]){NSString *query=[[s substringFromIndex:prefix.length] stringByTrimmingCharactersInSet:trim];if(query.length>=2&&query.length<=200)return @{@"action":@"search",@"page":@"navigate",@"query":query};}
++    }
++    return nil;
++}
++BOOL TIOHasRealtimeVoicePrefix(NSString *text) {
++    if(![text isKindOfClass:NSString.class])return NO;
++    NSString *s=[[text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] lowercaseString];
++    if([s isEqual:@"turbo"])return YES;
++    for(NSString *prefix in @[@"turbo ",@"turbo,",@"turbo，",@"turbo:",@"特博",@"涡轮"])if([s hasPrefix:prefix])return YES;
++    return NO;
++}
++
+ BOOL TIOIsEligibleChat(NSString *domain, NSString *intent, NSString *sub, BOOL offline, BOOL hasCommand) {
+     return [domain isEqual:@"chat"] && [intent isEqual:@"chat"] &&
+         [sub isEqual:@"workflow"] && !offline && !hasCommand;
+@@ -48,7 +87,11 @@ NSURL *TIOValidateEndpoint(NSString *input) {
  }
  
  NSString *TIOSystemPrompt(NSString *model) {
@@ -641,7 +732,7 @@ diff --git a/official-addon/EssentialsTests.m b/official-addon/EssentialsTests.m
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/EssentialsTests.m
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,49 @@
 +#import "Core.h"
 +#import "ResearchCatalog.h"
 +#include <assert.h>
@@ -656,6 +747,24 @@ new file mode 100644
 +        assert(!TIOIsVoiceExitCommand(@"Please explain the phrase end conversation."));
 +        assert(!TIOIsVoiceExitCommand(@"stop"));
 +        assert(!TIOIsVoiceExitCommand(@""));
++        assert([TIORealtimeVoiceCommand(@" Start Live Cue! ",NO)[@"page"] isEqual:@"liveCue"]);
++        assert([TIORealtimeVoiceCommand(@"Turbo, start translation.",NO)[@"action"] isEqual:@"start"]);
++        assert([TIORealtimeVoiceCommand(@"Turbo stop captions",YES)[@"page"] isEqual:@"captions"]);
++        assert([TIORealtimeVoiceCommand(@"Turbo stop",YES)[@"page"] isEqual:@"all"]);
++        assert([TIORealtimeVoiceCommand(@"特博停止翻译",YES)[@"page"] isEqual:@"translate"]);
++        assert([TIORealtimeVoiceCommand(@"小雷小雷，开始字幕。",NO)[@"page"] isEqual:@"captions"]);
++        assert([TIORealtimeVoiceCommand(@"navigate to Central Park",NO)[@"query"] isEqual:@"Central Park"]);
++        assert([TIORealtimeVoiceCommand(@"Turbo, navigate to St. Mary's Hospital",YES)[@"query"] isEqual:@"St. Mary's Hospital"]);
++        assert([TIORealtimeVoiceCommand(@"start navigation",NO)[@"action"] isEqual:@"start"]);
++        assert([TIORealtimeVoiceCommand(@"Turbo, cue now",YES)[@"action"] isEqual:@"ask"]);
++        for(NSString *text in @[@"",@"start",@"stop",@"Can you start translation?",@"Explain start live cue",@"Do not start captions",@"start translation and send my location",@"Turbo navigate to ",@"Turbocharged start captions",@"I said Turbo stop translation",@"\"start translation\""])
++            assert(!TIORealtimeVoiceCommand(text,NO));
++        assert(!TIORealtimeVoiceCommand(@"start translation",YES));
++        assert(!TIORealtimeVoiceCommand(@"stop listening",YES));
++        assert(TIOHasRealtimeVoicePrefix(@" Turbo, st"));
++        assert(TIOHasRealtimeVoicePrefix(@"TURBO"));
++        assert(!TIOHasRealtimeVoicePrefix(@"Turbocharged engines"));
++        assert(!TIOHasRealtimeVoicePrefix(@"Explain the Turbo command"));
 +        NSSet *removed=[NSSet setWithArray:@[@"agent",@"knowledge",@"navigation",@"capture",@"archive",@"search",@"searchKey",@"searchTest",@"todoTest",@"ttsKey",@"ttsEngine",@"thinking",@"experimentalOTA"]];
 +        NSMutableSet *seen=[NSMutableSet new];
 +        for(NSString *page in @[@"model",@"voice",@"diagnostics"]) {
@@ -669,7 +778,7 @@ new file mode 100644
 +        NSDictionary *request=TIOChatRequest(@"test-model",@"Hello");
 +        assert(request&&[request[@"stream"] boolValue]);
 +        assert([request[@"messages"][0][@"content"] containsString:@"English"]);
-+        NSLog(@"PASS: essentials routes and exact English voice-exit commands");
++        NSLog(@"PASS: essentials routes, voice commands, prefix guards and false-trigger rejection");
 +    }
 +    return 0;
 +}
@@ -1435,16 +1544,19 @@ diff --git a/official-addon/realtime/RealtimeHost.h b/official-addon/realtime/Re
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeHost.h
-@@ -0,0 +1,3 @@
+@@ -0,0 +1,5 @@
 +#import <UIKit/UIKit.h>
 +void TIOInstallRealtimeObserver(void);
 +void TIOOpenRealtime(UIViewController *presenter, NSString *page, NSDictionary *(^provider)(void));
++void TIOHandleRealtimeVoiceCommand(UIViewController *presenter, NSDictionary *command, NSDictionary *(^provider)(void));
++void TIORealtimeOfficialAudioStarted(void);
 diff --git a/official-addon/realtime/RealtimeHost.m b/official-addon/realtime/RealtimeHost.m
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeHost.m
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,101 @@
 +#import "RealtimeHost.h"
++#import "Core.h"
 +#import "ProtocolContext.h"
 +#import "SubtitleHUD.h"
 +#import "local-translation/NavigationSubtitleHUD.h"
@@ -1493,7 +1605,7 @@ new file mode 100644
 +    PreviousMethod=(void *)method_setImplementation(m,(IMP)MethodObserver);
 +    PreviousSend=(void *)method_setImplementation(s,(IMP)EventObserver);
 +}
-+void TIOOpenRealtime(UIViewController *presenter,NSString *page,NSDictionary *(^provider)(void)){
++static Class ConfigureRealtime(NSDictionary *(^provider)(void)){
 +    static void *handle;
 +    if(@available(iOS 26.0,*)){
 +        if(!handle)handle=dlopen([[NSBundle.mainBundle.privateFrameworksPath stringByAppendingPathComponent:@"TurboRealtime.dylib"] fileSystemRepresentation],RTLD_NOW|RTLD_LOCAL);
@@ -1502,6 +1614,8 @@ new file mode 100644
 +            NSDictionary *(^callback)(NSString *,NSDictionary *)=^NSDictionary *(NSString *op,NSDictionary *args){
 +                if(!NSThread.isMainThread)return @{};
 +                if([op isEqual:@"provider"])return provider?provider():@{};
++                if([op isEqual:@"parseVoice"])return TIORealtimeVoiceCommand(args[@"text"],YES)?:@{};
++                if([op isEqual:@"voicePrefix"])return @{@"matched":@(TIOHasRealtimeVoicePrefix(args[@"text"]))};
 +                if([op isEqual:@"status"])return TIOSubtitleNavigationStatus();
 +                if([op isEqual:@"start"]){if(!TIOSubtitleConfirmIdle())return @{};return @{@"sid":TIOSubtitleLiveCaptionStart()?:@""};}
 +                NSString *sid=[args[@"sid"] isKindOfClass:NSString.class]?args[@"sid"]:@"";
@@ -1509,18 +1623,44 @@ new file mode 100644
 +                if([op isEqual:@"stop"])TIOSubtitleNavigationStop(sid,@"Session ended");return @{};
 +            };
 +            ((void(*)(id,SEL,id))objc_msgSend)(bridge,configure,[callback copy]);
-+            SEL make=NSSelectorFromString(@"makeController:");
-+            if([bridge respondsToSelector:make]){id controller=((id(*)(id,SEL,id))objc_msgSend)(bridge,make,page);if([controller isKindOfClass:UIViewController.class]){[presenter.navigationController pushViewController:controller animated:YES];return;}}
++            return bridge;
 +        }
 +    }
++    return Nil;
++}
++static void PresentRealtime(UIViewController *presenter,UIViewController *controller){
++    if(!presenter||!controller||controller.view.window)return;
++    if(controller.navigationController){[controller.navigationController popToViewController:controller animated:YES];return;}
++    UINavigationController *nav=[presenter isKindOfClass:UINavigationController.class]?(id)presenter:presenter.navigationController;
++    if(!nav&&[presenter isKindOfClass:UITabBarController.class]){id selected=((UITabBarController *)presenter).selectedViewController;if([selected isKindOfClass:UINavigationController.class])nav=selected;}
++    if(nav){[nav pushViewController:controller animated:YES];return;}
++    [presenter presentViewController:[[UINavigationController alloc]initWithRootViewController:controller] animated:YES completion:nil];
++}
++static void ModuleUnavailable(UIViewController *presenter){
++    if(!presenter||UIApplication.sharedApplication.applicationState!=UIApplicationStateActive)return;
 +    UIAlertController *a=[UIAlertController alertControllerWithTitle:@"Realtime module unavailable" message:@"This build requires iOS 26 or later and the TurboRealtime module." preferredStyle:UIAlertControllerStyleAlert];
 +    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];[presenter presentViewController:a animated:YES completion:nil];
++}
++void TIOOpenRealtime(UIViewController *presenter,NSString *page,NSDictionary *(^provider)(void)){
++    Class bridge=ConfigureRealtime(provider);SEL make=NSSelectorFromString(@"makeController:");
++    if([bridge respondsToSelector:make]){id controller=((id(*)(id,SEL,id))objc_msgSend)(bridge,make,page);if([controller isKindOfClass:UIViewController.class]){PresentRealtime(presenter,controller);return;}}
++    ModuleUnavailable(presenter);
++}
++void TIOHandleRealtimeVoiceCommand(UIViewController *presenter,NSDictionary *command,NSDictionary *(^provider)(void)){
++    Class bridge=ConfigureRealtime(provider);SEL handle=NSSelectorFromString(@"handleVoiceCommand:");
++    if([bridge respondsToSelector:handle]){id controller=((id(*)(id,SEL,id))objc_msgSend)(bridge,handle,command);if([controller isKindOfClass:UIViewController.class])PresentRealtime(presenter,controller);return;}
++    ModuleUnavailable(presenter);
++}
++void TIORealtimeOfficialAudioStarted(void){
++    // Do not load the module merely because ordinary RayNeo speech began.
++    Class bridge=NSClassFromString(@"TIORealtimeHost");SEL stop=NSSelectorFromString(@"officialAudioStarted");
++    if([bridge respondsToSelector:stop])((void(*)(id,SEL))objc_msgSend)(bridge,stop);
 +}
 diff --git a/official-addon/realtime/RealtimePanel.swift b/official-addon/realtime/RealtimePanel.swift
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimePanel.swift
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,179 @@
 +import SwiftUI
 +import UIKit
 +import Translation
@@ -1528,8 +1668,7 @@ new file mode 100644
 +
 +@available(iOS 26.0, *)
 +struct RealtimePanel: View {
-+    let initialMode: LiveMode
-+    @StateObject private var session = RealtimeSession()
++    @ObservedObject var session: RealtimeSession
 +    @State private var confirmStart = false
 +    @State private var prepareTranslation = false
 +    var body: some View {
@@ -1575,11 +1714,15 @@ new file mode 100644
 +                    if !session.timing.isEmpty { Text(session.timing).font(.caption).foregroundStyle(.secondary) }
 +                }
 +            }
-+            Section { Text("One glasses session at a time, up to 20 minutes. Stop before using another RayNeo feature. Leaving this page ends the session; audio or connection interruptions also stop it.").font(.footnote).foregroundStyle(.secondary) }
++            Section("Voice commands") {
++                Text("Wake the glasses assistant, then say start Live Cue, start translation, or start captions. Keep RayNeo AI open on the iPhone. Prepare languages and your answer provider first.")
++                Text("While listening here, say Turbo, stop translation; Turbo, stop captions; Turbo, stop Live Cue; or Turbo, stop. Say Turbo, cue now to ask about the current question. Use the spoken language selected above.")
++            }.font(.footnote)
++            Section { Text("One glasses session at a time, up to 20 minutes. Starting the glasses voice assistant ends the current Turbo session. Leaving this page ends the session; audio or connection interruptions also stop it.").font(.footnote).foregroundStyle(.secondary) }
 +        }
 +        .navigationTitle("Live tools")
-+        .task { session.mode = initialMode; await session.loadLanguages() }
-+        .onDisappear { session.stop() }
++        .task { await session.loadLanguages() }
++        .onDisappear { TIORealtimeHost.closeLivePage() }
 +        .alert("Ready to start?",isPresented:$confirmStart) {
 +            Button("Cancel",role:.cancel) {}
 +            Button("Start") { session.start() }
@@ -1648,7 +1791,7 @@ new file mode 100644
 +
 +@available(iOS 26.0, *)
 +struct NavigationPanel: View {
-+    @StateObject private var nav = AppleNavigation()
++    @ObservedObject var nav: AppleNavigation
 +    @State private var confirmStart = false
 +    var body: some View {
 +        Form {
@@ -1686,8 +1829,11 @@ new file mode 100644
 +                    Button("Open destination in Google Maps") { nav.stop(); nav.openGoogleMaps() }
 +                } footer: { Text("Opens Google Maps on your phone. Google Maps does not send its live turns back to this app; starting it ends Turbo IO directions.") }
 +            }
++            Section("Voice commands") {
++                Text("With RayNeo AI open, wake the glasses assistant and say navigate to followed by a place. Confirm the destination from the results, then say start navigation. Wake the assistant and say stop navigation to end directions.").font(.footnote)
++            }
 +        }.navigationTitle("Navigate")
-+            .onDisappear { nav.stop() }
++            .onDisappear { TIORealtimeHost.closeNavigationPage() }
 +            .alert("Start directions?",isPresented:$confirmStart) {
 +                Button("Cancel",role:.cancel) {}
 +                Button("Start") { nav.start() }
@@ -1698,7 +1844,7 @@ diff --git a/official-addon/realtime/RealtimeSession.swift b/official-addon/real
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeSession.swift
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,328 @@
 +import Foundation
 +import UIKit
 +import SwiftUI
@@ -1708,12 +1854,82 @@ new file mode 100644
 +@available(iOS 26.0, *)
 +@MainActor @objc(TIORealtimeHost) final class TIORealtimeHost: NSObject {
 +    private static var callback: ((String, NSDictionary) -> NSDictionary)?
++    static let live = RealtimeSession()
++    static let navigation = AppleNavigation()
++    private static weak var liveController: UIViewController?
++    private static weak var navigationController: UIViewController?
++    private static var voiceTask: Task<Void,Never>?
++    private static var voiceGeneration = 0
++    private static var voicePage: String?
 +    @objc(configure:) static func configure(_ callback: @escaping (String, NSDictionary) -> NSDictionary) { self.callback = callback }
 +    static func call(_ operation: String, _ args: [String:Any] = [:]) -> [String:Any] { callback?(operation,args as NSDictionary) as? [String:Any] ?? [:] }
 +    @objc(makeController:) static func makeController(_ page: String) -> UIViewController {
-+        if page == "navigate" { return UIHostingController(rootView: NavigationPanel()) }
++        if page == "navigate" {
++            if let existing = navigationController { return existing }
++            let controller = UIHostingController(rootView: NavigationPanel(nav:navigation))
++            navigationController = controller; return controller
++        }
 +        if page == "chatgpt" { return UIHostingController(rootView: AccountPanel()) }
-+        return UIHostingController(rootView: RealtimePanel(initialMode:page == "translate" ? .translate : .cue))
++        if !live.running && !live.busy { live.mode = mode(page) }
++        if let existing = liveController { return existing }
++        let controller = UIHostingController(rootView: RealtimePanel(session:live))
++        liveController = controller; return controller
++    }
++    private static func mode(_ page: String) -> LiveMode { page == "translate" ? .translate : (page == "captions" ? .captions : .cue) }
++    @objc(officialAudioStarted) static func officialAudioStarted() {
++        cancelVoiceLaunch()
++        if live.running || live.busy { live.stop("Stopped for the glasses voice assistant") }
++        if navigation.running || navigation.acquiring || navigation.busy { navigation.stop("Stopped for the glasses voice assistant") }
++    }
++    private static func cancelVoiceLaunch() { voiceGeneration += 1; voiceTask?.cancel(); voiceTask = nil; voicePage = nil }
++    static func closeLivePage() { if voicePage != "navigate" { cancelVoiceLaunch() }; live.stop() }
++    static func closeNavigationPage() { if voicePage == "navigate" { cancelVoiceLaunch() }; navigation.stop() }
++    @objc(handleVoiceCommand:) static func handleVoiceCommand(_ command: NSDictionary) -> UIViewController? {
++        guard let action = command["action"] as? String, let page = command["page"] as? String else { return nil }
++        if action == "stop" {
++            cancelVoiceLaunch()
++            if page == "all" || page == live.mode.page { live.stop("Stopped by voice") }
++            if page == "all" || page == "navigate" { navigation.stop("Stopped by voice") }
++            return nil
++        }
++        if action == "ask" { live.askNow(); return nil }
++        guard ["start","search","open"].contains(action), ["liveCue","translate","captions","navigate"].contains(page), UIApplication.shared.applicationState == .active else { return nil }
++        cancelVoiceLaunch(); let epoch = voiceGeneration; voicePage = page
++        // Commands never silently switch an already-running session to a different
++        // microphone. Finish local capture and the prior display session first.
++        let controller = makeController(page)
++        voiceTask = Task { @MainActor [weak controller] in
++            defer { if voiceGeneration == epoch { voiceTask = nil; voicePage = nil } }
++            await live.stopAndWait("Switching tools…")
++            navigation.stop()
++            do {
++                // Give the official stopWorkflow and presentation their own turns.
++                // The subtitle protocol still requires a fresh start acknowledgement.
++                try await Task.sleep(nanoseconds:1_200_000_000)
++                guard !Task.isCancelled, voiceGeneration == epoch,
++                      UIApplication.shared.applicationState == .active,
++                      controller?.view.window != nil else { return }
++                let phase = call("status")["phase"] as? String ?? "idle"
++                guard !["stopping","uncertain"].contains(phase) else {
++                    live.status = "Waiting for the glasses to exit. Repeat the command when the home screen returns."
++                    navigation.status = live.status; return
++                }
++                if page == "navigate" {
++                    if action == "search", let query = command["query"] as? String {
++                        navigation.query = query; await navigation.findPlaces()
++                        if !navigation.places.isEmpty { navigation.status = "Choose the intended destination, then say start navigation." }
++                    } else if action == "start" {
++                        if navigation.destination == nil { navigation.status = "Choose a destination, then say start navigation." }
++                        else { navigation.start() }
++                    }
++                } else {
++                    await live.loadLanguages()
++                    guard !Task.isCancelled, voiceGeneration == epoch, controller?.view.window != nil else { return }
++                    live.mode = mode(page); live.start()
++                }
++            } catch { /* A newer command or leaving the page cancels launch. */ }
++        }
++        return controller
 +    }
 +}
 +
@@ -1765,7 +1981,10 @@ new file mode 100644
 +    }
 +}
 +
-+enum LiveMode: String, CaseIterable { case cue = "Live Cue", translate = "Translation", captions = "Captions" }
++enum LiveMode: String, CaseIterable {
++    case cue = "Live Cue", translate = "Translation", captions = "Captions"
++    var page: String { self == .cue ? "liveCue" : (self == .translate ? "translate" : "captions") }
++}
 +
 +@available(iOS 26.0, *)
 +@MainActor final class RealtimeSession: ObservableObject {
@@ -1854,11 +2073,27 @@ new file mode 100644
 +        GlassesDisplay.shared.release(id); UIApplication.shared.isIdleTimerDisabled = false
 +        stopTask = Task { await speech.stop(); if runGeneration == epoch { busy = false; stopTask = nil } }
 +    }
++    func stopAndWait(_ message: String) async { stop(message); await stopTask?.value }
 +    private func receive(_ piece: TranscriptPiece) {
 +        guard running else { return }
++        let clean = utterance.ingest(piece)
++        if TIORealtimeHost.call("voicePrefix",["text":clean])["matched"] as? Bool == true {
++            guard piece.final else { return }
++            let command = TIORealtimeHost.call("parseVoice",["text":clean])
++            // An active phone-microphone session only accepts prefixed controls.
++            // Keep command text out of both translation and the answer provider.
++            if !command.isEmpty {
++                utterance = UtteranceWindow()
++                if command["page"] as? String == "navigate", command["action"] as? String != "stop" {
++                    status = "Stop this live tool, then use the glasses assistant to open navigation."; return
++                }
++                _ = TIORealtimeHost.handleVoiceCommand(command as NSDictionary); return
++            }
++            status = "Voice command not recognized. Try Turbo, stop or Turbo, cue now."
++            utterance = UtteranceWindow(); return
++        }
 +        let full = window.ingest(piece)
 +        captions = String(full.suffix(700))
-+        let clean = utterance.ingest(piece)
 +        if piece.final && !piece.text.isEmpty && !closedRanges.contains(piece.start) {
 +            completedContext.append(piece.text); if completedContext.count > 6 { completedContext.removeFirst() }
 +            closedRanges.insert(piece.start); if closedRanges.count > 48 { closedRanges = Set(closedRanges.sorted().suffix(24)) }
