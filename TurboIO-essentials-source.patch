@@ -1247,7 +1247,7 @@ new file mode 100644
 +              let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: identifier)) else {
 +            throw RealtimeError("On-device speech is unavailable for this device or language.")
 +        }
-+        let module = SpeechTranscriber(locale: locale, preset: .progressiveLiveTranscription)
++        let module = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [.audioTimeRange])
 +        if let request = try await AssetInventory.assetInstallationRequest(supporting: [module]) {
 +            try await request.downloadAndInstall()
 +        }
@@ -1920,7 +1920,7 @@ diff --git a/official-addon/realtime/RealtimeTests.swift b/official-addon/realti
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeTests.swift
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,45 @@
 +import Foundation
 +import CryptoKit
 +
@@ -1956,7 +1956,8 @@ new file mode 100644
 +            return head+"."+body+"."+TokenValidation.base64URL(signature.rawRepresentation)
 +        }
 +        let valid = try token(claims)
-+        assert(try TokenValidation.verify(valid,jwks:[jwk],audience:"fixture-client",nonce:"fixture-nonce",now:1000)["sub"] as? String == "fixture-user")
++        let verified = try TokenValidation.verify(valid,jwks:[jwk],audience:"fixture-client",nonce:"fixture-nonce",now:1000)
++        assert(verified["sub"] as? String == "fixture-user")
 +        func rejects(_ token: String, audience: String = "fixture-client", nonce: String = "fixture-nonce", now: Double = 1000) {
 +            do { _ = try TokenValidation.verify(token,jwks:[jwk],audience:audience,nonce:nonce,now:now); fatalError("Accepted invalid token") } catch {}
 +        }
