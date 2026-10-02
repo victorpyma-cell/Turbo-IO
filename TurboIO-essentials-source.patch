@@ -845,7 +845,7 @@ diff --git a/official-addon/test-essentials.sh b/official-addon/test-essentials.
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/test-essentials.sh
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,20 @@
 +#!/bin/bash
 +set -euo pipefail
 +cd "$(dirname "$0")"
@@ -857,10 +857,14 @@ new file mode 100644
 +TIO_ESSENTIALS=1 bash build.sh embedded "${1:-com.victorpyma.turboio}"
 +# Verify that removed integrations did not merely disappear from the menu.
 +xcrun nm -gU build/essentials/TurboIOPrivateAddon.dylib > build/essentials/symbols.txt
-+if rg 'TIO(StartHomeTabBridge|InstallTodoRuntime|OpenKnowledge|NavigationController|NewsReaderController|VoiceTTSService)|OBJC_CLASS_\$_TIO(KnowledgeClient|RecordingExportsPanel|AlwaysOnAudioPanel)' build/essentials/symbols.txt; then
-+  echo 'Removed integration remains in essentials binary' >&2
-+  exit 1
-+fi
++python3 - <<'PY'
++from pathlib import Path
++import re
++symbols = Path('build/essentials/symbols.txt').read_text()
++removed = r'TIO(StartHomeTabBridge|InstallTodoRuntime|OpenKnowledge|NavigationController|NewsReaderController|VoiceTTSService)|OBJC_CLASS_\$_TIO(KnowledgeClient|RecordingExportsPanel|AlwaysOnAudioPanel)'
++if re.search(removed, symbols):
++    raise SystemExit('Removed integration remains in essentials binary')
++PY
 +echo 'Essentials compiled; excluded integrations absent from exported symbols.'
 diff --git a/official-addon/realtime/AppleNavigation.swift b/official-addon/realtime/AppleNavigation.swift
 new file mode 100644
