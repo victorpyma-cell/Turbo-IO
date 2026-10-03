@@ -709,6 +709,20 @@ index 2536fb5..23fb64e 100644
  plutil -lint TurboIOPrivateAddon.plist
  shasum -a 256 "$output"
 +if [[ "$essentials" == 1 ]]; then bash realtime/build.sh; fi
+diff --git a/official-addon/local-translation/SubtitleHUDTests.m b/official-addon/local-translation/SubtitleHUDTests.m
+index 61ae462..d222191 100644
+--- a/official-addon/local-translation/SubtitleHUDTests.m
++++ b/official-addon/local-translation/SubtitleHUDTests.m
+@@ -29,6 +29,9 @@ int main(void){@autoreleasepool{
+     [t receive:@{@"type":@8,@"json":@{@"sid":t.sid,@"code":@1}} now:501];
+     assert([t sendNavigationText:@"hello" now:502]);assert(![t sendNavigationText:@"too fast" now:502.1]);
+     assert([t sendNavigationText:@"world" now:502.5]);
++    assert([t sendNavigationText:@" " now:503]);
++    assert([sent.lastObject[@"json"][@"content"][@"source_transcript"] isEqual:@" "]);
++    assert([sent.lastObject[@"json"][@"status"] isEqual:@0]);
+     assert(![t sendNavigationText:[@"中" stringByPaddingToLength:129 withString:@"中" startingAtIndex:0] now:503]);
+     [t tick:800];assert([t.phase isEqual:@"ready"]);
+     [t tick:1700];assert([t.phase isEqual:@"stopping"]);
 diff --git a/official-addon/local-translation/src/CaptionAudioPipeline.swift b/official-addon/local-translation/src/CaptionAudioPipeline.swift
 index 4b08ad4..720a833 100644
 --- a/official-addon/local-translation/src/CaptionAudioPipeline.swift
@@ -754,16 +768,20 @@ index 4b71dfd..defb64a 100644
      auto callback = +[](const char * bytes, size_t length, void * context) {
          auto & stream = *static_cast<Stream *>(context);
 diff --git a/official-addon/local-translation/src/HyMTLocalTranslation.swift b/official-addon/local-translation/src/HyMTLocalTranslation.swift
-index 12edf84..fff6e6e 100644
+index 12edf84..eddade9 100644
 --- a/official-addon/local-translation/src/HyMTLocalTranslation.swift
 +++ b/official-addon/local-translation/src/HyMTLocalTranslation.swift
-@@ -4,7 +4,25 @@ import CryptoKit
+@@ -4,7 +4,29 @@ import CryptoKit
  import UIKit
  #endif
  
 -enum HyMTFailure: Error { case busy, notLoaded, invalidModel, invalidText, unsupportedLanguage, native(Int32) }
 +enum HyMTFailure: LocalizedError {
 +    case busy, notLoaded, invalidModel, invalidText, unsupportedLanguage, native(Int32)
++    var isCancellation: Bool {
++        if case .native(let code) = self { return code == Int32(TIO_HY_CANCELLED) }
++        return false
++    }
 +    var errorDescription: String? {
 +        switch self {
 +        case .busy: return "The local translator is finishing its previous operation. Wait a moment, then start again."
@@ -784,7 +802,7 @@ index 12edf84..fff6e6e 100644
  
  // At most one main-actor delivery is queued. An overloaded UI receives the latest
  // complete UTF-8 prefix, not a backlog of one task per generated token.
-@@ -146,7 +164,7 @@ private final class HyMTRequest: @unchecked Sendable {
+@@ -146,7 +168,7 @@ private final class HyMTRequest: @unchecked Sendable {
          guard loaded else { throw HyMTFailure.notLoaded }
          guard !text.isEmpty, text.utf8.count <= 4096, !text.contains("\0") else { throw HyMTFailure.invalidText }
          guard let language = Self.languageName(target), Self.languageName(source) != nil else { throw HyMTFailure.unsupportedLanguage }
@@ -793,7 +811,7 @@ index 12edf84..fff6e6e 100644
          guard ProcessInfo.processInfo.thermalState != .critical else { throw HyMTFailure.native(Int32(TIO_HY_CANCELLED)) }
          let request = try HyMTRequest(milliseconds: 15000)
          busy = true; current = request
-@@ -155,7 +173,7 @@ private final class HyMTRequest: @unchecked Sendable {
+@@ -155,7 +177,7 @@ private final class HyMTRequest: @unchecked Sendable {
          lastTiming = nil
          let delivery = HyMTPartialDelivery { [weak self] value in
              guard let self, self.generation == epoch, self.busy else { return }
@@ -802,7 +820,7 @@ index 12edf84..fff6e6e 100644
          }
          defer { delivery.close(); busy = false; current = nil }
          let translated: (String, HyMTTiming) = try await withTaskCancellationHandler(operation: {
-@@ -182,7 +200,18 @@ private final class HyMTRequest: @unchecked Sendable {
+@@ -182,7 +204,18 @@ private final class HyMTRequest: @unchecked Sendable {
          }, onCancel: { request.cancel() })
          guard epoch == generation, !Task.isCancelled else { throw CancellationError() }
          lastTiming = translated.1
@@ -822,7 +840,7 @@ index 12edf84..fff6e6e 100644
      }
      nonisolated private static func verify(_ url: URL) throws {
          let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-@@ -193,8 +222,14 @@ private final class HyMTRequest: @unchecked Sendable {
+@@ -193,8 +226,14 @@ private final class HyMTRequest: @unchecked Sendable {
          guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == modelSHA256 else { throw HyMTFailure.invalidModel }
      }
      nonisolated static func languageName(_ code: String) -> String? {
@@ -1860,7 +1878,7 @@ diff --git a/official-addon/realtime/LocalSpeech.swift b/official-addon/realtime
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/LocalSpeech.swift
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,133 @@
 +import Foundation
 +import Speech
 +import AVFAudio
@@ -1883,6 +1901,8 @@ new file mode 100644
 +    private var results: Task<Void, Never>?
 +    private var generation = 0
 +    private var starting = false
++    private var audioDuration = 0.0
++    private(set) var lastRecognitionDelay = 0.0
 +    private(set) var inputName = "iPhone microphone"
 +    private(set) var engineName = "on-device speech"
 +
@@ -1899,7 +1919,7 @@ new file mode 100644
 +                    throw RealtimeError("Tap Prepare speech language first to download Apple's on-device model.")
 +                }
 +            }
-+            return SpeechTranscriber(locale:locale,transcriptionOptions:[],reportingOptions:[.volatileResults],attributeOptions:[.audioTimeRange])
++            return SpeechTranscriber(locale:locale,transcriptionOptions:[],reportingOptions:[.volatileResults,.fastResults],attributeOptions:[.audioTimeRange])
 +        }
 +        // Apple's compatibility engine also stays on device. Do not fall back to
 +        // network recognition or silently send microphone audio to a provider.
@@ -1909,7 +1929,7 @@ new file mode 100644
 +                    throw RealtimeError("Tap Prepare speech language first to download Apple's on-device dictation model.")
 +                }
 +            }
-+            return DictationTranscriber(locale:locale,contentHints:[.farField],transcriptionOptions:[],reportingOptions:[.volatileResults],attributeOptions:[.audioTimeRange])
++            return DictationTranscriber(locale:locale,contentHints:[.farField],transcriptionOptions:[.punctuation],reportingOptions:[.volatileResults,.frequentFinalization],attributeOptions:[.audioTimeRange])
 +        }
 +        throw RealtimeError("On-device speech is unavailable for this device or language.")
 +    }
@@ -1924,6 +1944,7 @@ new file mode 100644
 +        starting = true
 +        defer { starting = false }
 +        generation += 1; let epoch = generation
++        audioDuration = 0; lastRecognitionDelay = 0
 +        let module = try await Self.makeModule(language,requireInstalled:true)
 +        try Task.checkCancellation()
 +        guard epoch == generation else { throw CancellationError() }
@@ -1948,6 +1969,7 @@ new file mode 100644
 +            input = continuation
 +            microphone.onBuffer = { [weak self] buffer in
 +                guard let self, self.generation == epoch else { return }
++                self.audioDuration += Double(buffer.frameLength) / buffer.format.sampleRate
 +                if case .dropped = continuation.yield(AnalyzerInput(buffer: buffer)) {
 +                    self.fail("Speech processing fell behind. Restart the session.", epoch: epoch)
 +                }
@@ -1959,12 +1981,14 @@ new file mode 100644
 +                        for try await result in transcriber.results {
 +                            guard let self, self.generation == epoch, !Task.isCancelled else { return }
 +                            let range = result.range
++                            self.lastRecognitionDelay = max(0,self.audioDuration-CMTimeGetSeconds(CMTimeRangeGetEnd(range)))
 +                            self.onText?(TranscriptPiece(start:CMTimeGetSeconds(range.start),end:CMTimeGetSeconds(CMTimeRangeGetEnd(range)),text:String(result.text.characters),final:result.isFinal))
 +                        }
 +                    } else if let transcriber = module as? DictationTranscriber {
 +                        for try await result in transcriber.results {
 +                            guard let self, self.generation == epoch, !Task.isCancelled else { return }
 +                            let range = result.range
++                            self.lastRecognitionDelay = max(0,self.audioDuration-CMTimeGetSeconds(CMTimeRangeGetEnd(range)))
 +                            self.onText?(TranscriptPiece(start:CMTimeGetSeconds(range.start),end:CMTimeGetSeconds(CMTimeRangeGetEnd(range)),text:String(result.text.characters),final:result.isFinal))
 +                        }
 +                    }
@@ -2154,7 +2178,7 @@ diff --git a/official-addon/realtime/RealtimeCore.swift b/official-addon/realtim
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeCore.swift
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,299 @@
 +import Foundation
 +
 +enum SpeechLocalePolicy {
@@ -2189,13 +2213,30 @@ new file mode 100644
 +        if s.contains("?") || s.contains("？") { return true }
 +        let prefixes = ["what ", "why ", "how ", "when ", "where ", "who ", "which ",
 +                        "can you ", "could you ", "would you ", "do you ", "does ",
++                        "will ", "should ", "was ", "were ", "have you ", "has ",
 +                        "is it ", "are you ", "tell me ", "explain ", "describe ",
-+                        "什么", "为什么", "怎么", "如何", "请问", "请解释"]
-+        return prefixes.contains { s.hasPrefix($0) }
++                        "什么", "为什么", "怎么", "如何", "请问", "请解释",
++                        "點解", "点解", "點樣", "点样", "邊個", "边个", "乜嘢"]
++        return prefixes.contains { s.hasPrefix($0) } || ["吗", "嗎", "咩"].contains { s.hasSuffix($0) }
 +    }
 +    static func cueCandidate(_ value: String, final: Bool) -> Bool {
 +        let s = clean(value)
-+        return s.count >= 8 && (isQuestion(s) || (final && s.count >= 18))
++        return s.count >= 4 && isQuestion(s)
++    }
++    static func questionKey(_ value: String) -> String {
++        clean(value.lowercased().filter { !$0.isPunctuation })
++    }
++    static func cueDisplay(_ answer: String) -> String { hud(answer, bytes: 360) }
++    static func sentences(_ text: String) -> [String] {
++        var result: [String] = [], current = ""
++        let chars = Array(text)
++        for (i, char) in chars.enumerated() {
++            current.append(char)
++            let end = "!?。！？;；".contains(char) || (char == "." && (i+1 == chars.count || chars[i+1].isWhitespace))
++            if end { result.append(clean(current)); current = "" }
++        }
++        if !clean(current).isEmpty { result.append(clean(current)) }
++        return result
 +    }
 +    static func hud(_ value: String, bytes: Int = 360) -> String {
 +        var out = ""
@@ -2219,7 +2260,10 @@ new file mode 100644
 +    mutating func ingest(_ piece: TranscriptPiece) -> String {
 +        guard piece.start.isFinite, piece.end.isFinite, piece.end >= piece.start else { return text }
 +        // Volatile ranges replace overlapping guesses; they are never appended as new speech.
-+        pieces.removeAll { !$0.final && $0.start < piece.end + 0.001 && $0.end > piece.start - 0.001 }
++        pieces.removeAll { old in
++            let overlap = old.start < piece.end + 0.001 && old.end > piece.start - 0.001
++            return overlap && (!old.final || (piece.start <= old.start + 0.001 && piece.end >= old.end - 0.001))
++        }
 +        if !pieces.contains(where: { $0.final && abs($0.start-piece.start) < 0.001 && abs($0.end-piece.end) < 0.001 }) {
 +            pieces.append(piece)
 +        }
@@ -2252,39 +2296,91 @@ new file mode 100644
 +struct TranslationWork: Equatable {
 +    let segment: Int
 +    let text: String
++    var recognizedAt: Double = 0
++    var speechDelay: Double = 0
++    static func == (a: Self, b: Self) -> Bool { a.segment == b.segment && a.text == b.text }
 +}
 +
-+// Coalesce revisions of the same utterance without cancelling a useful response.
-+// Three pending utterances bound latency and memory during a slow connection.
++struct CueQuestionGate {
++    enum Decision { case unchanged, question, retract }
++    private var last: TranslationWork?
++    mutating func consider(_ text: String, segment: Int) -> Decision {
++        guard RealtimePolicy.cueCandidate(text,final:false) else {
++            if last?.segment == segment { last = nil; return .retract }
++            return .unchanged
++        }
++        if let last, last.segment == segment,
++           RealtimePolicy.questionKey(last.text) == RealtimePolicy.questionKey(text) { return .unchanged }
++        last = TranslationWork(segment:segment,text:text)
++        return .question
++    }
++}
++
++// Translate the current sentence/chunk, including volatile ASR corrections.
++// Long unpunctuated speech advances in bounded chunks instead of growing forever.
++struct TranslationPhraseWindow {
++    private var utterance = UtteranceWindow(maxCharacters: 120)
++    private var scope = ""
++    private var sequence = 0
++    mutating func ingest(_ piece: TranscriptPiece) -> TranslationWork {
++        let full = utterance.ingest(piece)
++        let sentences = RealtimePolicy.sentences(full)
++        let sentence = RealtimePolicy.clean(sentences.last ?? full)
++        let words = sentence.split(whereSeparator: { $0.isWhitespace })
++        let cjk = sentence.unicodeScalars.contains { (0x3400...0x9fff).contains($0.value) || (0x3040...0x30ff).contains($0.value) }
++        let chunk: Int, phrase: String
++        if cjk {
++            chunk = max(0,(sentence.count-1)/48)
++            phrase = String(sentence.dropFirst(max(0,chunk*48-6)).prefix(54))
++        } else {
++            chunk = max(0,(words.count-1)/12)
++            phrase = words.dropFirst(max(0,chunk*12-2)).prefix(14).joined(separator:" ")
++        }
++        let newScope = "\(utterance.sequence):\(max(0,sentences.count-1)):\(chunk)"
++        if newScope != scope { sequence += 1; scope = newScope }
++        return TranslationWork(segment:sequence,text:String(phrase.suffix(160)))
++    }
++}
++
++// One active inference plus one replaceable latest snapshot. Never drain a FIFO
++// of old sentences while someone is still speaking.
 +struct TranslationQueue {
 +    private(set) var pending: [TranslationWork] = []
 +    private(set) var active: TranslationWork?
 +    private var last: TranslationWork?
 +    private(set) var skipped = false
++    private(set) var latestSegment = -1
 +    mutating func offer(_ work: TranslationWork) {
 +        guard !work.text.isEmpty else { return }
++        guard work.segment >= latestSegment else { return }
++        latestSegment = work.segment
 +        if work == active || work == last { pending.removeAll { $0.segment == work.segment }; return }
-+        if let i = pending.firstIndex(where: { $0.segment == work.segment }) { pending[i] = work }
-+        else { pending.append(work) }
-+        if pending.count > 3 { pending.removeFirst(); skipped = true }
++        if pending.contains(where: { $0.segment != work.segment }) { skipped = true }
++        pending = [work]
 +    }
 +    mutating func take() -> TranslationWork? {
 +        guard active == nil, !pending.isEmpty else { return nil }
 +        active = pending.removeFirst(); return active
 +    }
 +    mutating func finish() { last = active; active = nil }
-+    static func delay(lastStarted: Double, now: Double) -> Double { max(0.25, lastStarted + 1.0 - now) }
++    func isCurrent(_ work: TranslationWork) -> Bool { work.segment == latestSegment }
++    func shouldAdvance(after partial: String) -> Bool {
++        guard let active, !isCurrent(active) else { return false }
++        return RealtimePolicy.clean(partial).count >= 12
++    }
++    static func delay(lastStarted: Double, now: Double) -> Double { max(0.08, lastStarted + 0.25 - now) }
 +}
 +
 +struct TranslationCards {
-+    private var cards: [(segment: Int, text: String)] = []
++    private var latestSegment = -1
++    private(set) var current = ""
++    mutating func begin(_ segment: Int) { latestSegment = max(latestSegment,segment) }
 +    mutating func update(_ text: String, segment: Int) {
++        guard segment >= latestSegment else { return }
 +        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-+        if let i = cards.firstIndex(where: { $0.segment == segment }) { cards[i].text = text }
-+        else { cards.append((segment,text)); if cards.count > 3 { cards.removeFirst() } }
++        latestSegment = segment; current = text
 +    }
-+    var text: String { cards.map(\.text).joined(separator: "\n") }
-+    var current: String { cards.last?.text ?? "" }
++    var text: String { current }
 +}
 +
 +enum TurnDirection: String {
@@ -2517,7 +2613,7 @@ diff --git a/official-addon/realtime/RealtimePanel.swift b/official-addon/realti
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimePanel.swift
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,194 @@
 +import SwiftUI
 +import UIKit
 +import Translation
@@ -2551,7 +2647,7 @@ new file mode 100644
 +                Text("Uses the iPhone microphone for on-device captions. Place the phone where it can hear the conversation. The RayNeo glasses microphone remains part of the original RayNeo Live Cue.")
 +            }
 +            if session.mode == .translate && session.translationEngine == .hymt {
-+                Section { Text("Hy-MT2 is a dedicated translation model bundled on this iPhone. It translates locally and shows words as they are generated. No account or API key is needed.").font(.footnote) }
++                Section { Text("Hy-MT2 translates the current short phrase on this iPhone. Text changes as speech recognition corrects it. Older phrases are replaced, so this is a live view rather than a transcript. No account or API key is needed.").font(.footnote) }
 +            }
 +            if !session.running {
 +                Section("Language setup") {
@@ -2573,10 +2669,12 @@ new file mode 100644
 +            } footer: {
 +                Text(session.mode == .cue ? "Live Cue sends recognized text to your connected ChatGPT account or custom API. Audio stays on the iPhone. No recordings or transcript files are saved." : (session.mode == .translate && session.translationEngine == .chatGPT ? "Speech recognition runs on the iPhone. Short text phrases are sent to your selected ChatGPT model and translations stream back as they arrive. Internet and available ChatGPT usage are required. No recordings or transcript files are saved." : "Speech and translation run on the iPhone. Prepare the speech language before starting. Apple translation also requires its language packs; Hy-MT2 is bundled. No recordings or transcript files are saved."))
 +            }
-+            Section("Live captions") { Text(session.captions.isEmpty ? "Speech appears here as it is recognized." : session.captions).textSelection(.enabled).accessibilityIdentifier("realtime-captions") }
++            if session.mode != .cue {
++                Section(session.mode == .translate ? "Current spoken phrase" : "Live captions") { Text(session.captions.isEmpty ? "Speech appears here as it is recognized." : session.captions).textSelection(.enabled).accessibilityIdentifier("realtime-captions") }
++            }
 +            if session.mode != .captions {
 +                Section(session.mode == .cue ? "Suggested cue" : "Translation") {
-+                    Text(session.output.isEmpty ? "Waiting for speech…" : session.output).font(.title3).textSelection(.enabled).accessibilityIdentifier("realtime-output")
++                    Text(session.output.isEmpty ? (session.mode == .cue ? "Listening for a question…" : "Waiting for speech…") : session.output).font(.title3).textSelection(.enabled).accessibilityIdentifier("realtime-output")
 +                    if !session.timing.isEmpty { Text(session.timing).font(.caption).foregroundStyle(.secondary) }
 +                }
 +            }
@@ -2714,7 +2812,7 @@ diff --git a/official-addon/realtime/RealtimeSession.swift b/official-addon/real
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeSession.swift
-@@ -0,0 +1,421 @@
+@@ -0,0 +1,447 @@
 +import Foundation
 +import UIKit
 +import SwiftUI
@@ -2814,14 +2912,15 @@ new file mode 100644
 +    static let shared = GlassesDisplay()
 +    private var owner: UUID?
 +    private var sid = ""
-+    private var desired = "", sent = ""
++    private var desired = ""
++    private var sent: String?
 +    private var timer: Timer?
 +    private var failure: ((String) -> Void)?
 +    private var began = Date()
 +    private var ready = false
 +    func acquire(_ id: UUID, enabled: Bool, failure: @escaping (String)->Void) throws {
 +        guard owner == nil else { throw RealtimeError("Stop the current Live Cue, translation, or navigation session first.") }
-+        owner = id; self.failure = failure; desired = ""; sent = ""; ready = false
++        owner = id; self.failure = failure; desired = ""; sent = nil; ready = false
 +        guard enabled else { return }
 +        guard TIORealtimeHost.call("status")["available"] as? Bool == true,
 +              let session = TIORealtimeHost.call("start")["sid"] as? String, !session.isEmpty else {
@@ -2834,7 +2933,7 @@ new file mode 100644
 +        }
 +        self.timer = timer; RunLoop.main.add(timer,forMode:.common)
 +    }
-+    func update(_ text: String, owner: UUID) { if self.owner == owner { desired = RealtimePolicy.hud(text) } }
++    func update(_ text: String, owner: UUID) { if self.owner == owner { desired = RealtimePolicy.hud(text); flush() } }
 +    private func flush() {
 +        guard !sid.isEmpty, let id = owner else { return }
 +        let status = TIORealtimeHost.call("status"), phase = status["phase"] as? String ?? ""
@@ -2846,14 +2945,17 @@ new file mode 100644
 +        if !ready && Date().timeIntervalSince(began) > 12 {
 +            let report = failure; release(id); report?("The glasses did not acknowledge the display request. Check the connection and restart."); return
 +        }
-+        guard desired != sent, !desired.isEmpty, status["pending"] as? Bool != true else { return }
-+        if TIORealtimeHost.call("text",["sid":sid,"text":desired])["ok"] as? Bool == true { sent = desired; ready = true }
++        // The display protocol needs a nonempty frame. A space replaces the
++        // previous answer with a blank display while we wait for a new question.
++        let frame = desired.isEmpty ? " " : desired
++        guard frame != sent, status["pending"] as? Bool != true else { return }
++        if TIORealtimeHost.call("text",["sid":sid,"text":frame])["ok"] as? Bool == true { sent = frame; ready = true }
 +    }
 +    func release(_ id: UUID) {
 +        guard owner == id else { return }
 +        timer?.invalidate(); timer = nil
 +        if !sid.isEmpty { _ = TIORealtimeHost.call("stop",["sid":sid]) }
-+        owner = nil; sid = ""; failure = nil; desired = ""; sent = ""; ready = false
++        owner = nil; sid = ""; failure = nil; desired = ""; sent = nil; ready = false
 +    }
 +}
 +
@@ -2895,27 +2997,28 @@ new file mode 100644
 +    private let id = UUID()
 +    private var revision = 0
 +    private var window = TranscriptWindow()
-+    private var utterance = UtteranceWindow()
++    private var utterance = UtteranceWindow(maxCharacters:300)
 +    private var voiceWindow = VoiceCommandWindow()
 +    private var voiceDebounce: Task<Void,Never>?
 +    private var voiceRevision = 0
 +    private var pendingVoiceStop: String?
 +    private var latest = ""
-+    private var latestFinal = false
 +    private var completedContext: [String] = []
 +    private var lastSubmitted = ""
 +    private var debounce: Task<Void,Never>?
 +    private var cueTask: Task<Void,Never>?
++    private var cueExpiry: Task<Void,Never>?
++    private var cueGate = CueQuestionGate()
 +    private var startTask: Task<Void,Never>?
 +    private var stopTask: Task<Void,Never>?
 +    private var translateTask: Task<Void,Never>?
 +    private var translationQueue = TranslationQueue()
 +    private var translationCards = TranslationCards()
-+    private var translationUtterance = UtteranceWindow(maxCharacters:180)
++    private var translationUtterance = TranslationPhraseWindow()
 +    private var translationLastStarted = -Double.infinity
++    private var activeTranslationPartial = ""
 +    private var translatedSession: TranslationSession?
 +    private var runGeneration = 0
-+    private var lastResultAt = Date.distantPast
 +    private var closedRanges = Set<Double>()
 +
 +    func loadLanguages() async {
@@ -2961,8 +3064,9 @@ new file mode 100644
 +                }
 +                try Task.checkCancellation()
 +                try GlassesDisplay.shared.acquire(id,enabled:showOnGlasses) { [weak self] message in self?.stop(message) }
-+                window.reset(); utterance = UtteranceWindow(); voiceWindow = VoiceCommandWindow(); closedRanges.removeAll(); completedContext.removeAll(); latest = ""; captions = ""; output = ""; lastSubmitted = ""; timing = ""
-+                translationQueue = TranslationQueue(); translationCards = TranslationCards(); translationUtterance = UtteranceWindow(maxCharacters:180); translationLastStarted = -Double.infinity
++                window.reset(); utterance = UtteranceWindow(maxCharacters:300); voiceWindow = VoiceCommandWindow(); closedRanges.removeAll(); completedContext.removeAll(); latest = ""; captions = ""; output = ""; lastSubmitted = ""; timing = ""
++                cueGate = CueQuestionGate()
++                translationQueue = TranslationQueue(); translationCards = TranslationCards(); translationUtterance = TranslationPhraseWindow(); translationLastStarted = -Double.infinity
 +                speech.onText = { [weak self] piece in self?.receive(piece) }
 +                speech.onFailure = { [weak self] message in self?.stop(message) }
 +                // Permit results as soon as the engine starts.
@@ -2978,7 +3082,7 @@ new file mode 100644
 +    }
 +    func stop(_ message: String = "Stopped") {
 +        runGeneration += 1; let epoch = runGeneration; revision += 1; running = false; busy = true; status = message
-+        startTask?.cancel(); startTask = nil; debounce?.cancel(); cueTask?.cancel(); translateTask?.cancel()
++        startTask?.cancel(); startTask = nil; debounce?.cancel(); cueTask?.cancel(); cueExpiry?.cancel(); cueExpiry = nil; translateTask?.cancel()
 +        cancelVoiceStop()
 +        debounce = nil; cueTask = nil; translateTask = nil; translationQueue = TranslationQueue()
 +        translatedSession?.cancel(); translatedSession = nil
@@ -3019,34 +3123,42 @@ new file mode 100644
 +            return
 +        }
 +        cancelVoiceStop()
-+        let clean = utterance.ingest(piece)
-+        let full = window.ingest(piece)
-+        captions = String(full.suffix(700))
 +        if mode == .translate {
-+            let text = translationUtterance.ingest(piece)
-+            latest = text
-+            queueTranslation(TranslationWork(segment:translationUtterance.sequence,text:text))
++            var work = translationUtterance.ingest(piece)
++            work.recognizedAt = ProcessInfo.processInfo.systemUptime
++            work.speechDelay = speech.lastRecognitionDelay
++            latest = work.text; captions = work.text
++            queueTranslation(work)
 +            refreshHUD(); return
 +        }
++        let sentences = RealtimePolicy.sentences(utterance.ingest(piece))
++        let clean = sentences.last ?? ""
++        let questionSegment = utterance.sequence*1000 + max(0,sentences.count-1)
++        captions = mode == .captions ? String(window.ingest(piece).suffix(700)) : ""
++        latest = clean
++        if mode == .captions { refreshHUD(); return }
 +        if piece.final && !piece.text.isEmpty && !closedRanges.contains(piece.start) {
 +            completedContext.append(piece.text); if completedContext.count > 6 { completedContext.removeFirst() }
 +            closedRanges.insert(piece.start); if closedRanges.count > 48 { closedRanges = Set(closedRanges.sorted().suffix(24)) }
 +        }
-+        if clean == latest && (!piece.final || latestFinal) { refreshHUD(); return }
-+        // Finalizing unchanged words must not invalidate an answer already in flight.
-+        if clean != latest { revision += 1 }
-+        let current = revision
-+        latest = clean; latestFinal = piece.final; lastResultAt = Date()
-+        debounce?.cancel()
-+        // Never present an old answer as the response to a revised question.
-+        if mode == .cue && clean != lastSubmitted { cueTask?.cancel(); cueTask = nil; output = "" }
++        // Ordinary conversation contributes private context, never display text
++        // or an answer request. Repeated partial/final copies do not reset a timer.
++        switch cueGate.consider(clean,segment:questionSegment) {
++        case .unchanged: return
++        case .retract:
++            revision += 1; debounce?.cancel(); cueTask?.cancel(); cueTask = nil
++            cueExpiry?.cancel(); output = ""; status = "Listening for a question"; refreshHUD(); return
++        case .question: break
++        }
++        revision += 1; let current = revision
++        debounce?.cancel(); cueTask?.cancel(); cueTask = nil; cueExpiry?.cancel()
++        output = ""; status = "Question detected…"
 +        refreshHUD()
-+        guard !clean.isEmpty, mode != .captions else { return }
-+        let delay: UInt64 = piece.final ? 80_000_000 : 650_000_000
++        let delay: UInt64 = piece.final ? 40_000_000 : 350_000_000
 +        debounce = Task { [weak self] in
 +            try? await Task.sleep(nanoseconds:delay)
 +            guard !Task.isCancelled, let self, self.running, self.revision == current else { return }
-+            if RealtimePolicy.cueCandidate(clean,final:piece.final) { self.generateCue(clean, revision:current) }
++            self.generateCue(clean, revision:current)
 +        }
 +    }
 +    private func cancelVoiceStop() {
@@ -3054,7 +3166,7 @@ new file mode 100644
 +    }
 +    private func performVoice(_ command: [String:Any]) {
 +        cancelVoiceStop()
-+        voiceWindow.consume(); utterance = UtteranceWindow()
++        voiceWindow.consume(); utterance = UtteranceWindow(maxCharacters:300); cueGate = CueQuestionGate()
 +        if command["page"] as? String == "navigate", command["action"] as? String != "stop" {
 +            status = "Stop this live tool, then use the glasses assistant to open navigation."; return
 +        }
@@ -3062,13 +3174,12 @@ new file mode 100644
 +    }
 +    func askNow() {
 +        guard running, mode == .cue, !latest.isEmpty else { return }
-+        debounce?.cancel(); generateCue(latest,revision:revision)
++        revision += 1; debounce?.cancel(); cueExpiry?.cancel(); generateCue(latest,revision:revision)
 +    }
 +    private func generateCue(_ question: String, revision current: Int) {
-+        guard question != lastSubmitted || (output.isEmpty && cueTask == nil) else { return }
 +        cueTask?.cancel(); lastSubmitted = question; output = ""; status = "Thinking…"
 +        let started = Date(), epoch = runGeneration
-+        let context = completedContext.filter { $0 != question }.joined(separator:"\n")
++        let context = String(completedContext.filter { $0 != question }.suffix(3).joined(separator:"\n").suffix(900))
 +        cueTask = Task { [weak self] in
 +            guard let self else { return }
 +            defer { if self.revision == current && self.runGeneration == epoch { self.cueTask = nil } }
@@ -3081,6 +3192,11 @@ new file mode 100644
 +                }
 +                guard self.running, self.revision == current, self.runGeneration == epoch, !Task.isCancelled else { return }
 +                self.output = text; self.status = text.isEmpty ? "Listening · no question detected" : "Listening · cue ready"; self.refreshHUD()
++                self.cueExpiry = Task { [weak self] in
++                    try? await Task.sleep(nanoseconds:15_000_000_000)
++                    guard !Task.isCancelled, let self, self.running, self.revision == current, self.runGeneration == epoch else { return }
++                    self.output = ""; self.refreshHUD()
++                }
 +            } catch {
 +                guard self.running, self.revision == current, self.runGeneration == epoch, !Task.isCancelled else { return }
 +                self.output = ""; self.status = error.localizedDescription; self.refreshHUD()
@@ -3089,10 +3205,12 @@ new file mode 100644
 +    }
 +    private func queueTranslation(_ work: TranslationWork) {
 +        translationQueue.offer(work)
++        if translationEngine == .hymt, translationQueue.shouldAdvance(after:activeTranslationPartial) { hymt.cancel() }
 +        guard translateTask == nil, !translationQueue.pending.isEmpty else { return }
 +        let epoch = runGeneration
-+        // The deadline is not reset by new speech. Keep the previous translation
-+        // visible and accept in-flight results even when the transcript grows.
++        // The deadline is not reset by speech. Revisions replace the one pending
++        // snapshot. Let a useful preview through before advancing to a newer
++        // phrase, so continuous speech cannot cancel every first token forever.
 +        translateTask = Task { [weak self] in
 +            guard let self else { return }
 +            defer { if self.runGeneration == epoch { self.translateTask = nil } }
@@ -3102,26 +3220,32 @@ new file mode 100644
 +                    try await Task.sleep(nanoseconds:UInt64(delay*1_000_000_000))
 +                    guard !Task.isCancelled, self.running, self.runGeneration == epoch else { return }
 +                    guard let next = self.translationQueue.take() else { return }
++                    self.activeTranslationPartial = ""; self.translationCards.begin(next.segment)
 +                    let started = Date(); self.translationLastStarted = started.timeIntervalSinceReferenceDate
++                    let queued = max(0,ProcessInfo.processInfo.systemUptime-next.recognizedAt)
 +                    var first = true
 +                    let update: @MainActor @Sendable (String) -> Void = { [weak self] text in
-+                        guard let self, self.running, self.runGeneration == epoch, !Task.isCancelled else { return }
-+                        if first && !text.isEmpty { self.timing = String(format:"First translation %.1fs after request",Date().timeIntervalSince(started)); first = false }
++                        guard let self, self.running, self.runGeneration == epoch, !Task.isCancelled, self.translationQueue.active == next else { return }
++                        if first && !text.isEmpty { self.timing = String(format:"Speech lag %.1fs · queue %.1fs · first translation %.1fs",next.speechDelay,queued,Date().timeIntervalSince(started)); first = false }
 +                        self.translationCards.update(text,segment:next.segment)
 +                        self.output = self.translationCards.text; self.status = "Listening · translation arriving…"; self.refreshHUD()
++                        self.activeTranslationPartial = text
++                        if self.translationEngine == .hymt, self.translationQueue.shouldAdvance(after:text) { self.hymt.cancel() }
 +                    }
 +                    let text: String
 +                    if self.translationEngine == .chatGPT {
 +                        text = try await CueService().translate(text:next.text,source:self.source,target:self.target,update:update)
 +                    } else if self.translationEngine == .hymt {
-+                        text = try await self.hymt.translate(String(next.text.suffix(600)),source:self.source,target:self.target,onPartial:update)
++                        text = try await self.hymt.translate(next.text,source:self.source,target:self.target,onPartial:update)
 +                    } else if let session = self.translatedSession { text = try await session.translate(next.text).targetText }
 +                    else { throw RealtimeError("The offline translation session is unavailable.") }
 +                    guard !Task.isCancelled, self.running, self.runGeneration == epoch else { return }
 +                    update(text); self.translationQueue.finish()
-+                    self.status = self.translationQueue.skipped ? "Translation behind speech · showing latest phrases" : "Listening · \(self.translationEngine.rawValue)"
++                    self.status = "Listening · correcting current phrase"
 +                } catch {
 +                    guard !Task.isCancelled, self.runGeneration == epoch else { return }
++                    if self.translationEngine == .hymt, let active = self.translationQueue.active, !self.translationQueue.isCurrent(active),
++                       error is CancellationError || (error as? HyMTFailure)?.isCancellation == true { self.translationQueue.finish(); continue }
 +                    // Stop on a provider error instead of retrying on every partial.
 +                    self.stop("Translation stopped: \(error.localizedDescription)"); return
 +                }
@@ -3131,8 +3255,8 @@ new file mode 100644
 +    private func refreshHUD() {
 +        let text: String
 +        if mode == .captions { text = String(captions.suffix(240)) }
-+        else if mode == .translate { text = translationCards.current.isEmpty ? "Listening · waiting for translation…" : String(translationCards.current.suffix(300)) }
-+        else { text = output.isEmpty ? RealtimePolicy.hud(latest,bytes:260) : "Q: \(RealtimePolicy.hud(lastSubmitted,bytes:100))\n\(RealtimePolicy.hud(output,bytes:250))" }
++        else if mode == .translate { text = String(translationCards.current.suffix(300)) }
++        else { text = RealtimePolicy.cueDisplay(output) }
 +        GlassesDisplay.shared.update(text,owner:id)
 +    }
 +}
@@ -3140,7 +3264,7 @@ diff --git a/official-addon/realtime/RealtimeTests.swift b/official-addon/realti
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeTests.swift
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,215 @@
 +import Foundation
 +import CryptoKit
 +
@@ -3166,6 +3290,21 @@ new file mode 100644
 +        assert(!RealtimePolicy.cueCandidate("Okay",final:true))
 +        assert(RealtimePolicy.cueCandidate("Explain how this works",final:false))
 +        assert(!RealtimePolicy.cueCandidate("That sounds interesting",final:false))
++        assert(!RealtimePolicy.cueCandidate("This is a long ordinary statement about our meeting tomorrow.",final:true))
++        assert(RealtimePolicy.cueCandidate("Why?",final:true))
++        assert(RealtimePolicy.isQuestion("點解會咁樣"))
++        assert(RealtimePolicy.cueDisplay("").isEmpty)
++        assert(RealtimePolicy.cueDisplay("The train leaves at five.") == "The train leaves at five.")
++        assert(RealtimePolicy.sentences("Background statement. What time is it?").last == "What time is it?")
++        assert(RealtimePolicy.sentences("It costs 3.14 euros. Is that correct?").count == 2)
++        var cueGate = CueQuestionGate()
++        assert(cueGate.consider("We are discussing tomorrow's meeting",segment:0) == .unchanged)
++        assert(cueGate.consider("What time is the meeting",segment:1) == .question)
++        for _ in 0..<20 { assert(cueGate.consider("What time is the meeting?",segment:1) == .unchanged) }
++        assert(cueGate.consider("That makes sense",segment:2) == .unchanged)
++        assert(cueGate.consider("What time is the meeting?",segment:3) == .question)
++        assert(cueGate.consider("The time of the meeting is five",segment:3) == .retract)
++        print("PASS: answer-only Live Cue, statements rejected, question revisions deduplicated and retractions handled")
 +        assert(RealtimePolicy.hud(String(repeating:"翻译🙂",count:200)).utf8.count <= 360)
 +        var utterance = UtteranceWindow()
 +        _ = utterance.ingest(.init(start:0,end:1,text:"Can you tell me",final:true))
@@ -3209,24 +3348,54 @@ new file mode 100644
 +        queue.offer(.init(segment:0,text:"The train leaves soon."))
 +        assert(queue.active == active && queue.pending.count == 1)
 +        queue.offer(.init(segment:1,text:"Next sentence."))
++        assert(!queue.shouldAdvance(after:"Hi"))
++        assert(queue.shouldAdvance(after:"A useful preview"))
 +        queue.finish()
-+        assert(queue.take()?.text == "The train leaves soon.")
-+        queue.finish(); assert(queue.take()?.segment == 1); queue.finish()
++        assert(queue.take()?.text == "Next sentence.")
++        queue.finish()
 +        queue.offer(.init(segment:1,text:"Next sentence.")); assert(queue.pending.isEmpty)
 +        for i in 2...6 { queue.offer(.init(segment:i,text:"Sentence \(i)")) }
-+        assert(queue.pending.count == 3 && queue.skipped && queue.pending.first?.segment == 4)
-+        assert(TranslationQueue.delay(lastStarted:10,now:10.2) > 0.79)
-+        assert(TranslationQueue.delay(lastStarted:10,now:20) == 0.25)
++        assert(queue.pending.count == 1 && queue.skipped && queue.pending.first?.segment == 6)
++        queue.offer(.init(segment:3,text:"Stale final")); assert(queue.pending.first?.segment == 6)
++        assert(TranslationQueue.delay(lastStarted:10,now:10.2) <= 0.1)
++        assert(TranslationQueue.delay(lastStarted:10,now:20) == 0.08)
 +        var cards = TranslationCards()
 +        cards.update("Old useful translation",segment:0)
 +        cards.update("",segment:1); assert(cards.current == "Old useful translation")
 +        cards.update("New",segment:1); cards.update("New translation",segment:1)
-+        assert(cards.text == "Old useful translation\nNew translation")
++        assert(cards.text == "New translation")
++        cards.begin(2); cards.update("Late stale result",segment:1)
++        assert(cards.text == "New translation")
++        cards.update("Current phrase",segment:2); assert(cards.text == "Current phrase")
++        var phrases = TranslationPhraseWindow()
++        let firstPhrase = phrases.ingest(.init(start:0,end:1,text:"Where is the train",final:false))
++        let correctedPhrase = phrases.ingest(.init(start:0,end:1.2,text:"Where is the tram?",final:false))
++        assert(firstPhrase.segment == correctedPhrase.segment && correctedPhrase.text == "Where is the tram?")
++        let secondPhrase = phrases.ingest(.init(start:0,end:2,text:"Where is the tram? Please turn left.",final:false))
++        assert(secondPhrase.segment > correctedPhrase.segment && secondPhrase.text == "Please turn left.")
++        let longEnglish = (0..<90).map { "word\($0)" }.joined(separator:" ")
++        let boundedEnglish = phrases.ingest(.init(start:4,end:30,text:longEnglish,final:false))
++        assert(boundedEnglish.text.split(separator:" ").count <= 14 && boundedEnglish.text.contains("word89"))
++        let boundedChinese = phrases.ingest(.init(start:31,end:40,text:String(repeating:"请在下一站下车",count:30),final:false))
++        assert(boundedChinese.text.count <= 54)
++        // Simulate a slow model while speech continues: only the newest snapshot
++        // survives, and a useful preview is allowed before preemption.
++        var liveQueue = TranslationQueue(), liveCards = TranslationCards()
++        liveQueue.offer(firstPhrase); let inFlight = liveQueue.take()!
++        for i in 2...60 { liveQueue.offer(.init(segment:i,text:"Current phrase \(i)")) }
++        assert(liveQueue.pending.count == 1 && !liveQueue.shouldAdvance(after:""))
++        liveCards.update("First useful words",segment:inFlight.segment)
++        assert(liveQueue.shouldAdvance(after:liveCards.current))
++        liveQueue.finish(); let freshest = liveQueue.take()!
++        assert(freshest.segment == 60)
++        liveCards.begin(freshest.segment); liveCards.update("Newest translated phrase",segment:freshest.segment)
++        liveCards.update("Late old answer",segment:inFlight.segment)
++        assert(liveCards.text == "Newest translated phrase")
 +        var chunks = UtteranceWindow(maxCharacters:10)
 +        _ = chunks.ingest(.init(start:0,end:1,text:"A stable short phrase",final:true))
 +        assert(chunks.ingest(.init(start:1.1,end:2,text:"Next phrase",final:false)) == "Next phrase")
 +        assert(chunks.sequence == 1)
-+        print("PASS: continuous-speech translation queue, revision coalescing, preserved cards, bounded backlog and turn direction/progress")
++        print("PASS: live translation rolling phrases, latest-only queue, useful-preview preemption, no accumulated cards and stale-result rejection")
 +
 +        // Reject forged, expired, wrong-audience and wrong-nonce ID tokens.
 +        let key = P256.Signing.PrivateKey()
