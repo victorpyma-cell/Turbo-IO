@@ -754,7 +754,7 @@ index 4b71dfd..defb64a 100644
      auto callback = +[](const char * bytes, size_t length, void * context) {
          auto & stream = *static_cast<Stream *>(context);
 diff --git a/official-addon/local-translation/src/HyMTLocalTranslation.swift b/official-addon/local-translation/src/HyMTLocalTranslation.swift
-index 12edf84..4b4e27b 100644
+index 12edf84..fff6e6e 100644
 --- a/official-addon/local-translation/src/HyMTLocalTranslation.swift
 +++ b/official-addon/local-translation/src/HyMTLocalTranslation.swift
 @@ -4,7 +4,25 @@ import CryptoKit
@@ -784,7 +784,45 @@ index 12edf84..4b4e27b 100644
  
  // At most one main-actor delivery is queued. An overloaded UI receives the latest
  // complete UTF-8 prefix, not a backlog of one task per generated token.
-@@ -193,8 +211,14 @@ private final class HyMTRequest: @unchecked Sendable {
+@@ -146,7 +164,7 @@ private final class HyMTRequest: @unchecked Sendable {
+         guard loaded else { throw HyMTFailure.notLoaded }
+         guard !text.isEmpty, text.utf8.count <= 4096, !text.contains("\0") else { throw HyMTFailure.invalidText }
+         guard let language = Self.languageName(target), Self.languageName(source) != nil else { throw HyMTFailure.unsupportedLanguage }
+-        if Self.languageName(source) == language { return text }
++        if Self.languageName(source) == language { return Self.displayText(text, target: target) }
+         guard ProcessInfo.processInfo.thermalState != .critical else { throw HyMTFailure.native(Int32(TIO_HY_CANCELLED)) }
+         let request = try HyMTRequest(milliseconds: 15000)
+         busy = true; current = request
+@@ -155,7 +173,7 @@ private final class HyMTRequest: @unchecked Sendable {
+         lastTiming = nil
+         let delivery = HyMTPartialDelivery { [weak self] value in
+             guard let self, self.generation == epoch, self.busy else { return }
+-            onPartial?(value)
++            onPartial?(Self.displayText(value, target: target))
+         }
+         defer { delivery.close(); busy = false; current = nil }
+         let translated: (String, HyMTTiming) = try await withTaskCancellationHandler(operation: {
+@@ -182,7 +200,18 @@ private final class HyMTRequest: @unchecked Sendable {
+         }, onCancel: { request.cancel() })
+         guard epoch == generation, !Task.isCancelled else { throw CancellationError() }
+         lastTiming = translated.1
+-        return translated.0
++        return Self.displayText(translated.0, target: target)
++    }
++    nonisolated static func displayText(_ text: String, target: String) -> String {
++        // The compact model can ignore the requested Chinese writing system.
++        // Convert both streaming previews and final output to the chosen script.
++        let transform: String
++        switch languageName(target) {
++        case "Traditional Chinese": transform = "Hans-Hant"
++        case "Chinese": transform = "Hant-Hans"
++        default: return text
++        }
++        return text.applyingTransform(StringTransform(rawValue: transform), reverse: false) ?? text
+     }
+     nonisolated private static func verify(_ url: URL) throws {
+         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+@@ -193,8 +222,14 @@ private final class HyMTRequest: @unchecked Sendable {
          guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == modelSHA256 else { throw HyMTFailure.invalidModel }
      }
      nonisolated static func languageName(_ code: String) -> String? {
@@ -803,10 +841,10 @@ index 12edf84..4b4e27b 100644
      }
  }
 diff --git a/official-addon/local-translation/src/HyMTTranslationTests.swift b/official-addon/local-translation/src/HyMTTranslationTests.swift
-index 22f85ae..d842d80 100644
+index 22f85ae..b1e4568 100644
 --- a/official-addon/local-translation/src/HyMTTranslationTests.swift
 +++ b/official-addon/local-translation/src/HyMTTranslationTests.swift
-@@ -3,15 +3,20 @@ import Foundation
+@@ -3,15 +3,23 @@ import Foundation
  @main struct HyMTTranslationTests {
      @MainActor static func main() async throws {
          guard CommandLine.arguments.count == 3 else { fatalError("supply original and adapted model") }
@@ -815,6 +853,9 @@ index 22f85ae..d842d80 100644
 +        for code in ["zh_TW","zh_Hant_HK","zh-Hant","cmn-Hant-TW"] { precondition(CaptionHyMTTranslation.languageName(code) == "Traditional Chinese") }
 +        for code in ["yue_HK","yue-Hant-HK","yue_CN","zh-yue-HK"] { precondition(CaptionHyMTTranslation.languageName(code) == "Cantonese") }
 +        precondition(CaptionHyMTTranslation.languageName("unknown_US") == nil)
++        precondition(CaptionHyMTTranslation.displayText("请等待下一班火车。",target:"zh_Hant") == "請等待下一班火車。")
++        precondition(CaptionHyMTTranslation.displayText("請等待下一班火車。",target:"zh_CN") == "请等待下一班火车。")
++        precondition(CaptionHyMTTranslation.displayText("Hello 3.14",target:"en_US") == "Hello 3.14")
          let engine = CaptionHyMTTranslation()
          do {
              try await engine.load(url: URL(fileURLWithPath: CommandLine.arguments[1]))
@@ -829,16 +870,22 @@ index 22f85ae..d842d80 100644
          precondition(!text.isEmpty)
          precondition(!partials.isEmpty && partials.allSatisfy { text.hasPrefix($0) })
          precondition(engine.lastTiming!.firstTokenMS > 0)
-@@ -32,8 +37,14 @@ import Foundation
+@@ -32,8 +40,20 @@ import Foundation
          catch is CancellationError {}
          let recovery = try await engine.translate("Thank you.", source: "en", target: "zh")
          precondition(!recovery.isEmpty)
 +        let cantonese = try await engine.translate("唔該，最近嘅地鐵站喺邊度？",source:"yue_Hant_HK",target:"en_US")
 +        precondition(!cantonese.isEmpty)
 +        print("Cantonese to English: \(cantonese)")
-+        let traditional = try await engine.translate("Please wait for the next train.",source:"en_US",target:"zh_Hant")
++        var traditionalPartials: [String] = []
++        let traditional = try await engine.translate("Please wait for the next train.",source:"en_US",target:"zh_Hant") { traditionalPartials.append($0) }
 +        precondition(!traditional.isEmpty)
++        precondition(traditional.contains("請") && traditional.contains("車"))
++        precondition(!traditional.contains("请") && !traditional.contains("车"))
++        precondition(!traditionalPartials.isEmpty && traditionalPartials.allSatisfy { !$0.contains("请") && !$0.contains("车") })
 +        print("English to Traditional Chinese: \(traditional)")
++        let sameLanguage = try await engine.translate("请等待下一班火车。",source:"zh_Hant",target:"zh_Hant")
++        precondition(sameLanguage == "請等待下一班火車。")
          engine.unload()
          precondition(!engine.loaded)
 -        print("PASS Swift SHA gate, worker bridge, busy, cancel, recovery, unload")
