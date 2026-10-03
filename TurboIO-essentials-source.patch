@@ -663,11 +663,28 @@ index 2536fb5..23fb64e 100644
  plutil -lint TurboIOPrivateAddon.plist
  shasum -a 256 "$output"
 +if [[ "$essentials" == 1 ]]; then bash realtime/build.sh; fi
+diff --git a/official-addon/local-translation/src/CaptionAudioPipeline.swift b/official-addon/local-translation/src/CaptionAudioPipeline.swift
+index 4b08ad4..720a833 100644
+--- a/official-addon/local-translation/src/CaptionAudioPipeline.swift
++++ b/official-addon/local-translation/src/CaptionAudioPipeline.swift
+@@ -72,9 +72,9 @@ final class CaptionAudioPipeline: @unchecked Sendable {
+             guard output.frameLength > 0 else { release(); return }
+             let result = CaptionOwnedAudio(buffer: output)
+             Task { @MainActor [self] in
+-                defer { release() }
+-                guard !isClosed() else { return }
+-                deliver(result.buffer)
++                defer { self.release() }
++                guard !self.isClosed() else { return }
++                self.deliver(result.buffer)
+             }
+         }
+     }
 diff --git a/official-addon/local-translation/src/HyMTBridgeTests.cpp b/official-addon/local-translation/src/HyMTBridgeTests.cpp
-index 4b71dfd..54076c1 100644
+index 4b71dfd..defb64a 100644
 --- a/official-addon/local-translation/src/HyMTBridgeTests.cpp
 +++ b/official-addon/local-translation/src/HyMTBridgeTests.cpp
-@@ -23,8 +23,13 @@ int main(int argc, char ** argv) {
+@@ -23,12 +23,21 @@ int main(int argc, char ** argv) {
      const char * texts[] = {"前方八十米右转，到达后请停止导航。", "The next train leaves in five minutes. Please stand behind the yellow line.", "请问最近的地铁站在哪里？", "Could you speak more slowly? I am using live captions.", "会议改到明天下午三点，请带上最新的产品演示。"};
      for (int i = 0; i < 5; ++i) {
          auto r = tio_hymt_request_new(15000); char output[8192]; TIOHyMTMetrics metrics{};
@@ -682,6 +699,45 @@ index 4b71dfd..54076c1 100644
          require(status == 0 && output[0], "translation");
          std::printf("sample=%d first_ms=%.2f total_ms=%.2f prompt=%d output=%d text=%s\n", i, metrics.first_token_ms, metrics.total_ms, metrics.prompt_tokens, metrics.output_tokens, output);
      }
+     char output[8192]; auto cancelled = tio_hymt_request_new(5000);
++    auto spanish = tio_hymt_request_new(15000); TIOHyMTMetrics spanishMetrics{};
++    require(tio_hymt_translate(engine, spanish, "Where is the nearest train station?", "Spanish", 192, output, sizeof(output), &spanishMetrics) == TIO_HY_OK && output[0], "Spanish translation");
++    std::printf("sample=Spanish first_ms=%.2f total_ms=%.2f text=%s\n", spanishMetrics.first_token_ms, spanishMetrics.total_ms, output);
++    tio_hymt_request_free(spanish);
+     struct Stream { std::string last; int count = 0; TIOHyMTRequest * cancel = nullptr; };
+     auto callback = +[](const char * bytes, size_t length, void * context) {
+         auto & stream = *static_cast<Stream *>(context);
+diff --git a/official-addon/local-translation/src/HyMTLocalTranslation.swift b/official-addon/local-translation/src/HyMTLocalTranslation.swift
+index 12edf84..a26c65e 100644
+--- a/official-addon/local-translation/src/HyMTLocalTranslation.swift
++++ b/official-addon/local-translation/src/HyMTLocalTranslation.swift
+@@ -4,7 +4,25 @@ import CryptoKit
+ import UIKit
+ #endif
+ 
+-enum HyMTFailure: Error { case busy, notLoaded, invalidModel, invalidText, unsupportedLanguage, native(Int32) }
++enum HyMTFailure: LocalizedError {
++    case busy, notLoaded, invalidModel, invalidText, unsupportedLanguage, native(Int32)
++    var errorDescription: String? {
++        switch self {
++        case .busy: return "The local translator is finishing its previous operation. Wait a moment, then start again."
++        case .notLoaded: return "The local model was unloaded. Start translation again."
++        case .invalidModel: return "The bundled translation model failed verification. Reinstall the complete build."
++        case .invalidText: return "The recognized phrase could not be translated. Try a shorter phrase."
++        case .unsupportedLanguage: return "Choose a supported Hy-MT2 source and target language."
++        case .native(let code):
++            switch code {
++            case Int32(TIO_HY_TIMEOUT): return "Local translation took too long. Try a shorter phrase or stop other active tools."
++            case Int32(TIO_HY_CANCELLED): return "Local translation was cancelled, possibly because the phone became too warm."
++            case Int32(TIO_HY_LIMIT): return "The phrase exceeded the local model's capacity. Try a shorter phrase."
++            default: return "The local translation engine failed (code \(code)). Stop and start translation again."
++            }
++        }
++    }
++}
+ 
+ // At most one main-actor delivery is queued. An overloaded UI receives the latest
+ // complete UTF-8 prefix, not a backlog of one task per generated token.
 diff --git a/official-addon/BuildFeatures.h b/official-addon/BuildFeatures.h
 new file mode 100644
 --- /dev/null
@@ -1173,7 +1229,7 @@ diff --git a/official-addon/realtime/build.sh b/official-addon/realtime/build.sh
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/build.sh
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,34 @@
 +#!/bin/bash
 +set -euo pipefail
 +cd "$(dirname "$0")/.."
@@ -1204,7 +1260,10 @@ new file mode 100644
 +python3 realtime/extract-request-test.py
 +xcrun clang -DTIO_ESSENTIALS=1 -fobjc-arc -fmodules -framework Foundation -I build/essentials realtime/RequestRoutingTests.m -o build/essentials/request-routing-tests
 +build/essentials/request-routing-tests
-+build/essentials/hymt/mac/hymt-tests build/essentials/hymt/Hy-MT2-1.8B-STQ43.gguf 4
++echo "Native model test CPU count: $(sysctl -n hw.ncpu)"
++# Hosted macOS runners expose fewer cores than the iPhone; avoid oversubscribing
++# the CPU backend's spinning workers. Keep the production 15-second timeout.
++build/essentials/hymt/mac/hymt-tests build/essentials/hymt/Hy-MT2-1.8B-STQ43.gguf 2
 diff --git a/official-addon/realtime/ChatGPTAccount.swift b/official-addon/realtime/ChatGPTAccount.swift
 new file mode 100644
 --- /dev/null
@@ -2851,7 +2910,7 @@ new file mode 100644
 +                    guard let next = self.translationQueue.take() else { return }
 +                    let started = Date(); self.translationLastStarted = started.timeIntervalSinceReferenceDate
 +                    var first = true
-+                    let update: (String) -> Void = { [weak self] text in
++                    let update: @MainActor @Sendable (String) -> Void = { [weak self] text in
 +                        guard let self, self.running, self.runGeneration == epoch, !Task.isCancelled else { return }
 +                        if first && !text.isEmpty { self.timing = String(format:"First translation %.1fs after request",Date().timeIntervalSince(started)); first = false }
 +                        self.translationCards.update(text,segment:next.segment)
@@ -2866,7 +2925,7 @@ new file mode 100644
 +                    else { throw RealtimeError("The offline translation session is unavailable.") }
 +                    guard !Task.isCancelled, self.running, self.runGeneration == epoch else { return }
 +                    update(text); self.translationQueue.finish()
-+                    self.status = self.translationQueue.skipped ? "Connection behind speech · showing latest phrases" : "Listening · \(self.translationEngine.rawValue)"
++                    self.status = self.translationQueue.skipped ? "Translation behind speech · showing latest phrases" : "Listening · \(self.translationEngine.rawValue)"
 +                } catch {
 +                    guard !Task.isCancelled, self.runGeneration == epoch else { return }
 +                    // Stop on a provider error instead of retrying on every partial.
