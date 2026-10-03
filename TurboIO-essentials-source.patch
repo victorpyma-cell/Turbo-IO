@@ -598,7 +598,7 @@ index e00697f..f28e850 100644
 +#endif
  @end
 diff --git a/official-addon/VoiceTTSCore.m b/official-addon/VoiceTTSCore.m
-index 200662d..4f04aeb 100644
+index 200662d..fc0ad84 100644
 --- a/official-addon/VoiceTTSCore.m
 +++ b/official-addon/VoiceTTSCore.m
 @@ -1,5 +1,7 @@
@@ -617,6 +617,52 @@ index 200662d..4f04aeb 100644
  NSString *TIOVoiceTTSChunk(NSString *pending, BOOL final, NSUInteger *consumed){
      if(consumed)*consumed=0;
      if(![pending isKindOfClass:NSString.class]||!pending.length)return nil;
+@@ -22,6 +25,15 @@ NSString *TIOVoiceTTSChunk(NSString *pending, BOOL final, NSUInteger *consumed){
+     NSCharacterSet *soft=[NSCharacterSet characterSetWithCharactersInString:@"，,、：: "];
+     for(NSUInteger i=0;i<limit;i++){unichar c=[pending characterAtIndex:i];
+         if([stop characterIsMember:c]&&i>=3){cut=i+1;break;}
++        // Wait for one character after '.' so a streamed decimal is not spoken
++        // as a completed sentence. Abbreviations and initials stay together.
++        if(c=='.'&&i>=3&&i+1<pending.length&&[NSCharacterSet.whitespaceAndNewlineCharacterSet characterIsMember:[pending characterAtIndex:i+1]]){
++            NSString *prefix=[pending substringToIndex:i];
++            NSRange space=[prefix rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet options:NSBackwardsSearch];
++            NSString *word=[[prefix substringFromIndex:space.location==NSNotFound?0:NSMaxRange(space)] lowercaseString];
++            BOOL initial=word.length==1&&[NSCharacterSet.letterCharacterSet characterIsMember:[word characterAtIndex:0]];
++            BOOL abbreviation=[@[@"mr",@"mrs",@"ms",@"dr",@"prof",@"sr",@"jr",@"st",@"vs",@"etc"] containsObject:word]||[word containsString:@"."];
++            if(!initial&&!abbreviation){cut=i+1;break;}}
+         if(i>=65&&[soft characterIsMember:c]){cut=i+1;break;}}
+     if(cut==NSNotFound){if(limit>=140)cut=limit;else if(final)cut=limit;else return nil;}
+     if(cut<pending.length&&cut>0){unichar a=[pending characterAtIndex:cut-1],b=[pending characterAtIndex:cut];
+diff --git a/official-addon/VoiceTTSTests.m b/official-addon/VoiceTTSTests.m
+index 338c8fb..11a51e7 100644
+--- a/official-addon/VoiceTTSTests.m
++++ b/official-addon/VoiceTTSTests.m
+@@ -1,15 +1,25 @@
+ #import "VoiceTTS.h"
++#import "BuildFeatures.h"
+ #include <assert.h>
+ 
+ int main(void){@autoreleasepool{
++#if !TIO_ESSENTIALS
+     assert(TIOVoiceTTSServiceURLValid(@"wss://dashscope.aliyuncs.com/api-ws/v1/inference"));
+     assert(TIOVoiceTTSServiceURLValid(@"wss://example.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"));
+     assert(!TIOVoiceTTSServiceURLValid(@"https://dashscope.aliyuncs.com/api-ws/v1/inference"));
+     assert(!TIOVoiceTTSServiceURLValid(@"wss://dashscope.aliyuncs.com.evil.test/api-ws/v1/inference"));
+     assert(!TIOVoiceTTSServiceURLValid(@"wss://user@dashscope.aliyuncs.com/api-ws/v1/inference"));
++#endif
+     NSUInteger used=0;
+     assert(!TIOVoiceTTSChunk(@"正在说话",NO,&used)&&used==0);
+     assert([TIOVoiceTTSChunk(@"第一句话。第二句",NO,&used) isEqualToString:@"第一句话。"]&&used==5);
+     assert([TIOVoiceTTSChunk(@"结束",YES,&used) isEqualToString:@"结束"]&&used==2);
++    assert([TIOVoiceTTSChunk(@"Here is the answer. More detail follows",NO,&used) isEqualToString:@"Here is the answer."]);
++    assert([TIOVoiceTTSChunk(@"It is 3.14 meters. Next",NO,&used) isEqualToString:@"It is 3.14 meters."]);
++    assert(!TIOVoiceTTSChunk(@"The value is 3.",NO,&used)&&used==0);
++    assert([TIOVoiceTTSChunk(@"Dr. Smith is here. Next",NO,&used) isEqualToString:@"Dr. Smith is here."]);
++    assert(!TIOVoiceTTSChunk(@"Meet Mr. Smith",NO,&used)&&used==0);
++    assert(!TIOVoiceTTSChunk(@"Ask J. Smith",NO,&used)&&used==0);
++    assert([TIOVoiceTTSChunk(@"Hello.",YES,&used) isEqualToString:@"Hello."]);
+     NSLog(@"PASS: TTS endpoint policy and streaming chunks");
+ }return 0;}
 diff --git a/official-addon/build.sh b/official-addon/build.sh
 index 2536fb5..23fb64e 100644
 --- a/official-addon/build.sh
@@ -708,7 +754,7 @@ index 4b71dfd..defb64a 100644
      auto callback = +[](const char * bytes, size_t length, void * context) {
          auto & stream = *static_cast<Stream *>(context);
 diff --git a/official-addon/local-translation/src/HyMTLocalTranslation.swift b/official-addon/local-translation/src/HyMTLocalTranslation.swift
-index 12edf84..a26c65e 100644
+index 12edf84..4b4e27b 100644
 --- a/official-addon/local-translation/src/HyMTLocalTranslation.swift
 +++ b/official-addon/local-translation/src/HyMTLocalTranslation.swift
 @@ -4,7 +4,25 @@ import CryptoKit
@@ -738,6 +784,67 @@ index 12edf84..a26c65e 100644
  
  // At most one main-actor delivery is queued. An overloaded UI receives the latest
  // complete UTF-8 prefix, not a backlog of one task per generated token.
+@@ -193,8 +211,14 @@ private final class HyMTRequest: @unchecked Sendable {
+         guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == modelSHA256 else { throw HyMTFailure.invalidModel }
+     }
+     nonisolated static func languageName(_ code: String) -> String? {
+-        // Initial caption UI scope; model itself supports more languages.
+-        let language = code.lowercased().split(separator: "-").first.map(String.init) ?? ""
+-        return ["zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean", "fr": "French", "de": "German", "es": "Spanish", "it": "Italian", "ru": "Russian", "pt": "Portuguese"][language]
++        // Apple returns both ICU (zh_Hant_HK) and BCP-47 (zh-Hant-HK) IDs.
++        let parts = code.replacingOccurrences(of:"_",with:"-").lowercased().split(separator:"-").map(String.init)
++        guard let language = parts.first else { return nil }
++        if language == "yue" || (language == "zh" && parts.dropFirst().first == "yue") { return "Cantonese" }
++        if language == "zh" || language == "cmn" {
++            if parts.contains("hant") || (!parts.contains("hans") && parts.contains(where:{ ["tw","hk","mo"].contains($0) })) { return "Traditional Chinese" }
++            return "Chinese"
++        }
++        return ["en": "English", "ja": "Japanese", "ko": "Korean", "fr": "French", "de": "German", "es": "Spanish", "it": "Italian", "ru": "Russian", "pt": "Portuguese"][language]
+     }
+ }
+diff --git a/official-addon/local-translation/src/HyMTTranslationTests.swift b/official-addon/local-translation/src/HyMTTranslationTests.swift
+index 22f85ae..d842d80 100644
+--- a/official-addon/local-translation/src/HyMTTranslationTests.swift
++++ b/official-addon/local-translation/src/HyMTTranslationTests.swift
+@@ -3,15 +3,20 @@ import Foundation
+ @main struct HyMTTranslationTests {
+     @MainActor static func main() async throws {
+         guard CommandLine.arguments.count == 3 else { fatalError("supply original and adapted model") }
++        for code in ["en_US","en-US","EN_us"] { precondition(CaptionHyMTTranslation.languageName(code) == "English") }
++        for code in ["zh_CN","zh-Hans-CN","cmn_CN"] { precondition(CaptionHyMTTranslation.languageName(code) == "Chinese") }
++        for code in ["zh_TW","zh_Hant_HK","zh-Hant","cmn-Hant-TW"] { precondition(CaptionHyMTTranslation.languageName(code) == "Traditional Chinese") }
++        for code in ["yue_HK","yue-Hant-HK","yue_CN","zh-yue-HK"] { precondition(CaptionHyMTTranslation.languageName(code) == "Cantonese") }
++        precondition(CaptionHyMTTranslation.languageName("unknown_US") == nil)
+         let engine = CaptionHyMTTranslation()
+         do {
+             try await engine.load(url: URL(fileURLWithPath: CommandLine.arguments[1]))
+             fatalError("original ID-42 model must be rejected by SHA gate")
+         } catch HyMTFailure.invalidModel {}
+-        try await engine.load(url: URL(fileURLWithPath: CommandLine.arguments[2]))
++        try await engine.load(url: URL(fileURLWithPath: CommandLine.arguments[2]),threads:2)
+         precondition(engine.loaded)
+         var partials: [String] = []
+-        let text = try await engine.translate("Please turn left at the next intersection.", source: "en-US", target: "zh-CN") { partials.append($0) }
++        let text = try await engine.translate("Please turn left at the next intersection.", source: "en_US", target: "zh_CN") { partials.append($0) }
+         precondition(!text.isEmpty)
+         precondition(!partials.isEmpty && partials.allSatisfy { text.hasPrefix($0) })
+         precondition(engine.lastTiming!.firstTokenMS > 0)
+@@ -32,8 +37,14 @@ import Foundation
+         catch is CancellationError {}
+         let recovery = try await engine.translate("Thank you.", source: "en", target: "zh")
+         precondition(!recovery.isEmpty)
++        let cantonese = try await engine.translate("唔該，最近嘅地鐵站喺邊度？",source:"yue_Hant_HK",target:"en_US")
++        precondition(!cantonese.isEmpty)
++        print("Cantonese to English: \(cantonese)")
++        let traditional = try await engine.translate("Please wait for the next train.",source:"en_US",target:"zh_Hant")
++        precondition(!traditional.isEmpty)
++        print("English to Traditional Chinese: \(traditional)")
+         engine.unload()
+         precondition(!engine.loaded)
+-        print("PASS Swift SHA gate, worker bridge, busy, cancel, recovery, unload")
++        print("PASS Swift locale mapping, Cantonese/Traditional Chinese inference, SHA gate, worker bridge, busy, cancel, recovery, unload")
+     }
+ }
 diff --git a/official-addon/BuildFeatures.h b/official-addon/BuildFeatures.h
 new file mode 100644
 --- /dev/null
@@ -957,11 +1064,13 @@ diff --git a/official-addon/test-essentials.sh b/official-addon/test-essentials.
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/test-essentials.sh
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,22 @@
 +#!/bin/bash
 +set -euo pipefail
 +cd "$(dirname "$0")"
 +mkdir -p build/essentials
++xcrun clang -DTIO_ESSENTIALS=1 -fobjc-arc -fmodules -Wall -Wextra -framework Foundation VoiceTTSCore.m VoiceTTSTests.m -o build/essentials/voice-tts-tests
++./build/essentials/voice-tts-tests
 +xcrun clang -DTIO_ESSENTIALS=1 -fobjc-arc -fmodules -Wall -Wextra \
 +  -Wno-unused-parameter -Wno-incompatible-pointer-types -framework Foundation \
 +  Core.m Profile.m ResearchCatalog.m EssentialsTests.m -o build/essentials/essentials-tests
@@ -1229,7 +1338,7 @@ diff --git a/official-addon/realtime/build.sh b/official-addon/realtime/build.sh
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/build.sh
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,41 @@
 +#!/bin/bash
 +set -euo pipefail
 +cd "$(dirname "$0")/.."
@@ -1264,6 +1373,13 @@ new file mode 100644
 +# Hosted macOS runners expose fewer cores than the iPhone; avoid oversubscribing
 +# the CPU backend's spinning workers. Keep the production 15-second timeout.
 +build/essentials/hymt/mac/hymt-tests build/essentials/hymt/Hy-MT2-1.8B-STQ43.gguf 2
++mac=build/essentials/hymt/mac
++xcrun swiftc -swift-version 5 -parse-as-library -O -import-objc-header local-translation/src/HyMTBridge.h \
++  local-translation/src/HyMTLocalTranslation.swift local-translation/src/HyMTTranslationTests.swift \
++  "$mac/libTurboHyMT.a" "$mac/llama-build/src/libllama.a" \
++  "$mac/llama-build/ggml/src/libggml.a" "$mac/llama-build/ggml/src/libggml-cpu.a" "$mac/llama-build/ggml/src/libggml-base.a" \
++  -lc++ -framework Accelerate -o build/essentials/hymt-swift-tests
++build/essentials/hymt-swift-tests build/essentials/hymt/Hy-MT2-original.gguf build/essentials/hymt/Hy-MT2-1.8B-STQ43.gguf
 diff --git a/official-addon/realtime/ChatGPTAccount.swift b/official-addon/realtime/ChatGPTAccount.swift
 new file mode 100644
 --- /dev/null
@@ -1991,8 +2107,29 @@ diff --git a/official-addon/realtime/RealtimeCore.swift b/official-addon/realtim
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeCore.swift
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,227 @@
 +import Foundation
++
++enum SpeechLocalePolicy {
++    static func key(_ identifier: String) -> String { identifier.replacingOccurrences(of:"_",with:"-").lowercased() }
++    static func unique(_ identifiers: [String]) -> [String] {
++        var seen = Set<String>()
++        return identifiers.sorted().filter { seen.insert(key($0)).inserted }
++    }
++    static func label(_ identifier: String) -> String {
++        let parts = key(identifier).split(separator:"-").map(String.init)
++        guard let language = parts.first else { return identifier }
++        let cantonese = language == "yue" || (language == "zh" && parts.dropFirst().first == "yue")
++        let name = cantonese ? "Cantonese" : (["zh","cmn"].contains(language) ? "Chinese" : (Locale.current.localizedString(forLanguageCode:language) ?? language))
++        var labels = [name]
++        if parts.contains("hans") { labels.append("Simplified") }
++        if parts.contains("hant") { labels.append("Traditional") }
++        if let region = parts.dropFirst().first(where:{ $0.count == 2 || ($0.count == 3 && $0.allSatisfy(\.isNumber)) }) {
++            labels.append(Locale.current.localizedString(forRegionCode:region.uppercased()) ?? region.uppercased())
++        }
++        return labels.joined(separator:" · ")
++    }
++}
 +
 +// Pure policy shared with the macOS replay tests. No microphone or network here.
 +enum RealtimePolicy {
@@ -2333,7 +2470,7 @@ diff --git a/official-addon/realtime/RealtimePanel.swift b/official-addon/realti
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimePanel.swift
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,192 @@
 +import SwiftUI
 +import UIKit
 +import Translation
@@ -2349,14 +2486,17 @@ new file mode 100644
 +            Section {
 +                Picker("Mode",selection:$session.mode) { ForEach(LiveMode.allCases,id:\.self) { Text($0.rawValue).tag($0) } }.disabled(session.running || session.busy)
 +                Picker("Spoken language",selection:$session.source) {
-+                    ForEach(session.languages,id:\.self) { Text(Locale.current.localizedString(forIdentifier:$0) ?? $0).tag($0) }
++                    ForEach(session.validSpeechLanguages,id:\.self) { Text(SpeechLocalePolicy.label($0)).tag($0) }
++                    if !session.validSpeechLanguages.contains(session.source) {
++                        Text("\(SpeechLocalePolicy.label(session.source)) · unavailable for this engine").tag(session.source).disabled(true)
++                    }
 +                }.disabled(session.running || session.busy)
 +                if session.mode == .translate {
 +                    Picker("Translation engine",selection:$session.translationEngine) {
 +                        ForEach(TranslationEngine.allCases,id:\.self) { Text($0.rawValue).tag($0) }
 +                    }.disabled(session.running || session.busy)
 +                    Picker("Translate into",selection:$session.target) {
-+                        ForEach(session.translationLanguages,id:\.self) { Text(Locale.current.localizedString(forIdentifier:$0) ?? $0).tag($0) }
++                        ForEach(session.translationLanguages,id:\.self) { Text(SpeechLocalePolicy.label($0)).tag($0) }
 +                    }.disabled(session.running || session.busy)
 +                }
 +                Toggle("Show on glasses",isOn:$session.showOnGlasses).disabled(session.running || session.busy)
@@ -2380,7 +2520,7 @@ new file mode 100644
 +                if session.running || session.busy {
 +                    Button("Stop",role:.destructive) { session.stop() }
 +                } else {
-+                    Button("Start \(session.mode.rawValue)") { confirmStart = true }.disabled(session.languages.isEmpty)
++                    Button("Start \(session.mode.rawValue)") { confirmStart = true }.disabled(!session.validSpeechLanguages.contains(session.source))
 +                }
 +                if session.running && session.mode == .cue { Button("Cue for the current question") { session.askNow() } }
 +            } footer: {
@@ -2527,7 +2667,7 @@ diff --git a/official-addon/realtime/RealtimeSession.swift b/official-addon/real
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeSession.swift
-@@ -0,0 +1,415 @@
+@@ -0,0 +1,421 @@
 +import Foundation
 +import UIKit
 +import SwiftUI
@@ -2699,6 +2839,10 @@ new file mode 100644
 +    @Published var busy = false
 +    @Published var showOnGlasses = true
 +    @Published var timing = ""
++    var validSpeechLanguages: [String] {
++        if mode == .translate && translationEngine == .hymt { return languages.filter { CaptionHyMTTranslation.languageName($0) != nil } }
++        return languages
++    }
 +    private let speech = LocalSpeech()
 +    private let hymt = CaptionHyMTTranslation()
 +    private let id = UUID()
@@ -2728,8 +2872,9 @@ new file mode 100644
 +    private var closedRanges = Set<Double>()
 +
 +    func loadLanguages() async {
-+        languages = await LocalSpeech.languages().map(\.identifier)
-+        if translationEngine == .hymt { translationLanguages = ["de","en","es","fr","it","ja","ko","pt","ru","zh"] }
++        languages = SpeechLocalePolicy.unique(await LocalSpeech.languages().map(\.identifier))
++        if let equivalent = languages.first(where:{SpeechLocalePolicy.key($0) == SpeechLocalePolicy.key(source)}) { source = equivalent }
++        if translationEngine == .hymt { translationLanguages = ["de","en","es","fr","it","ja","ko","pt","ru","yue","zh","zh-Hant"] }
 +        else { translationLanguages = await LanguageAvailability().supportedLanguages.map { $0.minimalIdentifier }.sorted() }
 +        if !languages.contains(source), let english = languages.first(where:{$0.hasPrefix("en")}) { source = english }
 +        if !translationLanguages.contains(target), let first = translationLanguages.first { target = first }
@@ -2748,7 +2893,8 @@ new file mode 100644
 +        startTask = Task {
 +            do {
 +                if mode == .translate && translationEngine == .hymt {
-+                    guard CaptionHyMTTranslation.languageName(source) != nil, CaptionHyMTTranslation.languageName(target) != nil else { throw RealtimeError("Choose a supported Hy-MT2 speech language: English, Chinese, Japanese, Korean, French, German, Spanish, Italian, Russian or Portuguese.") }
++                    guard CaptionHyMTTranslation.languageName(source) != nil else { throw RealtimeError("Hy-MT2 does not support the selected speech language: \(SpeechLocalePolicy.label(source)) (\(source)). Choose another spoken language.") }
++                    guard CaptionHyMTTranslation.languageName(target) != nil else { throw RealtimeError("Hy-MT2 does not support the selected translation language: \(target). Choose another target language.") }
 +                    guard let url = Bundle.main.url(forResource:"Hy-MT2-1.8B-STQ43",withExtension:"gguf",subdirectory:"TurboCaptionModels") else { throw RealtimeError("The Hy-MT2 model is missing. Install the complete build.") }
 +                    status = "Loading local translation model…"
 +                    // Leave CPU capacity for speech recognition, audio and display.
@@ -2947,12 +3093,21 @@ diff --git a/official-addon/realtime/RealtimeTests.swift b/official-addon/realti
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeTests.swift
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,170 @@
 +import Foundation
 +import CryptoKit
 +
 +@main struct RealtimeTests {
 +    static func main() throws {
++        let locales = ["zh_CN","zh-CN","zh_Hant_TW","yue_HK","yue_Hant_CN"]
++        let unique = SpeechLocalePolicy.unique(locales)
++        assert(unique.count == 4)
++        let labels = unique.map(SpeechLocalePolicy.label)
++        assert(Set(labels).count == 4)
++        assert(SpeechLocalePolicy.label("yue_Hant_HK").hasPrefix("Cantonese"))
++        assert(SpeechLocalePolicy.label("zh_Hant_TW").contains("Traditional"))
++        assert(SpeechLocalePolicy.key("en_US") == SpeechLocalePolicy.key("en-US"))
++        print("PASS: speech locale aliases deduplicated; Chinese/Cantonese region and script labels distinct")
 +        var window = TranscriptWindow()
 +        _ = window.ingest(.init(start:0,end:1,text:"What is the whether",final:false))
 +        assert(window.ingest(.init(start:0,end:1.2,text:"What is the weather?",final:true)) == "What is the weather?")
@@ -3068,6 +3223,11 @@ new file mode 100644
 +        assert(body["store"] as? Bool == false && body["stream"] as? Bool == true)
 +        assert(input.count == 3 && input.last?["content"] == "Follow-up question")
 +        assert(!input.contains { $0["role"] == "system" })
++        for fast in [ChatGPTAnswerBody.make(model:"gpt-5.6-luna",question:"Hello",history:[]),ChatGPTAnswerBody.cue(model:"gpt-5.6-luna",instructions:"Short reply",prompt:"Hello")] {
++            assert((fast["reasoning"] as? [String:String])?["effort"] == "none")
++            assert(fast["stream"] as? Bool == true && fast["store"] as? Bool == false)
++        }
++        assert(body["reasoning"] == nil)
 +        let cueBody = ChatGPTAnswerBody.cue(model:"fixture-model",instructions:"A concise cue",prompt:"What does this mean?")
 +        let translationBody = ChatGPTAnswerBody.translation(model:"gpt-5.6-luna",text:"Where is the station?",source:"en",target:"es")
 +        assert((translationBody["input"] as? [[String:String]])?.first?["content"] == "Where is the station?")
@@ -3160,7 +3320,7 @@ diff --git a/official-addon/realtime/ResponseStream.swift b/official-addon/realt
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/ResponseStream.swift
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,51 @@
 +import Foundation
 +
 +struct ResponseStream {
@@ -3190,13 +3350,17 @@ new file mode 100644
 +        let input = history.suffix(50).filter { ["user", "assistant"].contains($0["role"] ?? "") && !($0["content"] ?? "").isEmpty }
 +            .map { ["role": $0["role"]!, "content": String(($0["content"] ?? "").prefix(8000))] }
 +            + [["role": "user", "content": String(question.prefix(8000))]]
-+        return ["model": model, "instructions": "You are the user's helpful voice assistant on smart glasses. Answer the user's latest question directly in their language. Keep spoken replies concise, normally under 120 words, without markdown. Use prior turns only as conversation context. Be honest about uncertainty and your inability to operate apps or obtain live information without tools.", "input": input, "stream": true, "store": false]
++        var body: [String:Any] = ["model": model, "instructions": "You are the user's helpful voice assistant on smart glasses. Answer the user's latest question directly in their language. For ordinary conversation, use one or two short sentences, normally under 40 words. Give more detail when explicitly requested. Put the useful answer in the first sentence; omit preambles and markdown. Use prior turns only as conversation context. Be honest about uncertainty and your inability to operate apps or obtain live information without tools.", "input": input, "stream": true, "store": false]
++        if model == "gpt-5.6-luna" { body["reasoning"] = ["effort":"none"] }
++        return body
 +    }
 +
 +    static func cue(model: String, instructions: String, prompt: String) -> [String: Any] {
 +        // ChatGPT plan sharing requires an array, even for a single user turn.
-+        ["model": model, "instructions": instructions,
++        var body: [String:Any] = ["model": model, "instructions": instructions,
 +         "input": [["role": "user", "content": prompt]], "stream": true, "store": false]
++        if model == "gpt-5.6-luna" { body["reasoning"] = ["effort":"none"] }
++        return body
 +    }
 +
 +    static func translation(model: String, text: String, source: String, target: String) -> [String: Any] {
