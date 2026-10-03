@@ -2527,7 +2527,7 @@ diff --git a/official-addon/realtime/RealtimeSession.swift b/official-addon/real
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeSession.swift
-@@ -0,0 +1,414 @@
+@@ -0,0 +1,415 @@
 +import Foundation
 +import UIKit
 +import SwiftUI
@@ -2751,7 +2751,8 @@ new file mode 100644
 +                    guard CaptionHyMTTranslation.languageName(source) != nil, CaptionHyMTTranslation.languageName(target) != nil else { throw RealtimeError("Choose a supported Hy-MT2 speech language: English, Chinese, Japanese, Korean, French, German, Spanish, Italian, Russian or Portuguese.") }
 +                    guard let url = Bundle.main.url(forResource:"Hy-MT2-1.8B-STQ43",withExtension:"gguf",subdirectory:"TurboCaptionModels") else { throw RealtimeError("The Hy-MT2 model is missing. Install the complete build.") }
 +                    status = "Loading local translation model…"
-+                    try await hymt.load(url:url,threads:4)
++                    // Leave CPU capacity for speech recognition, audio and display.
++                    try await hymt.load(url:url,threads:2)
 +                }
 +                if mode == .translate && translationEngine == .chatGPT {
 +                    guard TIORealtimeHost.chatGPTReady() else { throw RealtimeError("Sign in and select a model under ChatGPT account, or choose Apple offline translation.") }
