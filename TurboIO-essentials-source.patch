@@ -663,6 +663,25 @@ index 2536fb5..23fb64e 100644
  plutil -lint TurboIOPrivateAddon.plist
  shasum -a 256 "$output"
 +if [[ "$essentials" == 1 ]]; then bash realtime/build.sh; fi
+diff --git a/official-addon/local-translation/src/HyMTBridgeTests.cpp b/official-addon/local-translation/src/HyMTBridgeTests.cpp
+index 4b71dfd..54076c1 100644
+--- a/official-addon/local-translation/src/HyMTBridgeTests.cpp
++++ b/official-addon/local-translation/src/HyMTBridgeTests.cpp
+@@ -23,8 +23,13 @@ int main(int argc, char ** argv) {
+     const char * texts[] = {"前方八十米右转，到达后请停止导航。", "The next train leaves in five minutes. Please stand behind the yellow line.", "请问最近的地铁站在哪里？", "Could you speak more slowly? I am using live captions.", "会议改到明天下午三点，请带上最新的产品演示。"};
+     for (int i = 0; i < 5; ++i) {
+         auto r = tio_hymt_request_new(15000); char output[8192]; TIOHyMTMetrics metrics{};
+-        status = tio_hymt_translate(engine, r, texts[i], i % 2 ? "Chinese" : "English", 192, output, sizeof(output), &metrics);
++        std::string partial;
++        auto capture = +[](const char * bytes, size_t length, void * context) {
++            static_cast<std::string *>(context)->assign(bytes, length);
++        };
++        status = tio_hymt_translate_stream(engine, r, texts[i], i % 2 ? "Chinese" : "English", 192, output, sizeof(output), &metrics, threads, capture, &partial);
+         tio_hymt_request_free(r);
++        if (status != 0 || !output[0]) std::fprintf(stderr, "sample=%d status=%d first_ms=%.2f total_ms=%.2f prompt=%d output=%d partial=%s\n", i, status, metrics.first_token_ms, metrics.total_ms, metrics.prompt_tokens, metrics.output_tokens, partial.c_str());
+         require(status == 0 && output[0], "translation");
+         std::printf("sample=%d first_ms=%.2f total_ms=%.2f prompt=%d output=%d text=%s\n", i, metrics.first_token_ms, metrics.total_ms, metrics.prompt_tokens, metrics.output_tokens, output);
+     }
 diff --git a/official-addon/BuildFeatures.h b/official-addon/BuildFeatures.h
 new file mode 100644
 --- /dev/null
@@ -1122,7 +1141,7 @@ diff --git a/official-addon/realtime/build-hymt.sh b/official-addon/realtime/bui
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/build-hymt.sh
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,27 @@
 +#!/bin/bash
 +set -euo pipefail
 +# Run from official-addon. This is the existing pinned CPU engine, without the
@@ -1150,12 +1169,11 @@ new file mode 100644
 +python3 local-translation/src/prepare_hymt_model.py "$deps/Hy-MT2-original.gguf" "$deps/Hy-MT2-1.8B-STQ43.gguf"
 +cmake -S local-translation/src -B "$deps/mac" -DHYMT_LLAMA_SOURCE="$deps/llama" -DCMAKE_BUILD_TYPE=Release
 +cmake --build "$deps/mac" --target hymt-tests -j 4
-+"$deps/mac/hymt-tests" "$deps/Hy-MT2-1.8B-STQ43.gguf" 4
 diff --git a/official-addon/realtime/build.sh b/official-addon/realtime/build.sh
 new file mode 100644
 --- /dev/null
 +++ b/official-addon/realtime/build.sh
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,31 @@
 +#!/bin/bash
 +set -euo pipefail
 +cd "$(dirname "$0")/.."
@@ -1186,6 +1204,7 @@ new file mode 100644
 +python3 realtime/extract-request-test.py
 +xcrun clang -DTIO_ESSENTIALS=1 -fobjc-arc -fmodules -framework Foundation -I build/essentials realtime/RequestRoutingTests.m -o build/essentials/request-routing-tests
 +build/essentials/request-routing-tests
++build/essentials/hymt/mac/hymt-tests build/essentials/hymt/Hy-MT2-1.8B-STQ43.gguf 4
 diff --git a/official-addon/realtime/ChatGPTAccount.swift b/official-addon/realtime/ChatGPTAccount.swift
 new file mode 100644
 --- /dev/null
