@@ -1166,6 +1166,35 @@ index 22f85ae..b1e4568 100644
 +        print("PASS Swift locale mapping, Cantonese/Traditional Chinese inference, SHA gate, worker bridge, busy, cancel, recovery, unload")
      }
  }
+diff --git a/official-addon/local-translation/src/ParakeetSpeech.swift b/official-addon/local-translation/src/ParakeetSpeech.swift
+index f3cb41a..e0b8d8e 100644
+--- a/official-addon/local-translation/src/ParakeetSpeech.swift
++++ b/official-addon/local-translation/src/ParakeetSpeech.swift
+@@ -50,6 +50,7 @@ actor ParakeetWorker {
+ }
+ 
+ @MainActor final class CaptionParakeetSpeech {
++    private(set) var processedDuration = 0.0
+     var onText: ((String, Bool) -> Void)?
+     var onFailure: ((String) -> Void)?
+     private var stream: AsyncStream<[Float]>.Continuation?
+@@ -63,7 +64,7 @@ actor ParakeetWorker {
+     }
+     func prepare() async throws {
+         guard task == nil, !loading else { throw CaptionFailure.configuration }
+-        loading = true; epoch += 1; let generation = epoch
++        loading = true; processedDuration = 0; epoch += 1; let generation = epoch
+         defer { loading = false }
+         let worker = ParakeetWorker()
+         do { try await worker.load(directory: Self.modelURL()) }
+@@ -80,6 +81,7 @@ actor ParakeetWorker {
+                     guard ProcessInfo.processInfo.thermalState != .critical else { throw ParakeetFailure.thermal }
+                     let (text, final) = try await worker.step(samples)
+                     guard let self, self.epoch == generation, !Task.isCancelled else { break }
++                    self.processedDuration += Double(samples.count) / 16000
+                     if !text.isEmpty && (text != previous || final) { self.onText?(text, final) }
+                     previous = final ? "" : text
+                 }
 diff --git a/official-addon/realtime/AppleNavigation.swift b/official-addon/realtime/AppleNavigation.swift
 new file mode 100644
 index 0000000..8d1d1fe
@@ -1824,10 +1853,10 @@ index 0000000..8f6b974
 +}
 diff --git a/official-addon/realtime/LocalSpeech.swift b/official-addon/realtime/LocalSpeech.swift
 new file mode 100644
-index 0000000..5045706
+index 0000000..3b71ea2
 --- /dev/null
 +++ b/official-addon/realtime/LocalSpeech.swift
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,184 @@
 +import Foundation
 +import Speech
 +import AVFAudio
@@ -1845,6 +1874,9 @@ index 0000000..5045706
 +    var onText: ((TranscriptPiece) -> Void)?
 +    var onFailure: ((String) -> Void)?
 +    private let microphone = CaptionMicrophoneInput()
++    private let parakeet = CaptionParakeetSpeech()
++    private var parakeetActive = false
++    private var parakeetTimeline = ParakeetTimeline()
 +    private var analyzer: SpeechAnalyzer?
 +    private var input: AsyncStream<AnalyzerInput>.Continuation?
 +    private var results: Task<Void, Never>?
@@ -1855,10 +1887,10 @@ index 0000000..5045706
 +    private(set) var inputName = "iPhone microphone"
 +    private(set) var engineName = "on-device speech"
 +
-+    static func languages() async -> [Locale] {
++    static func languages(engine: SpeechEngine = .apple) async -> [Locale] {
 +        let modern = SpeechTranscriber.isAvailable ? await SpeechTranscriber.supportedLocales : []
 +        let dictation = await DictationTranscriber.supportedLocales
-+        return Set((modern+dictation).map(\.identifier)).sorted().map { Locale(identifier:$0) }
++        return Set((modern+dictation).map(\.identifier) + (engine == .parakeet ? ["en-US"] : [])).sorted().map { Locale(identifier:$0) }
 +    }
 +    private static func makeModule(_ identifier: String, requireInstalled: Bool) async throws -> any SpeechModule {
 +        if SpeechTranscriber.isAvailable,
@@ -1882,18 +1914,29 @@ index 0000000..5045706
 +        }
 +        throw RealtimeError("On-device speech is unavailable for this device or language.")
 +    }
-+    func prepareLanguage(_ identifier: String) async throws {
++    func prepareLanguage(_ identifier: String, engine: SpeechEngine = .apple) async throws {
++        if engine.usesParakeet(identifier) {
++            defer { parakeet.stop() }
++            do { try await parakeet.prepare() }
++            catch { throw RealtimeError("Parakeet could not load its bundled English model. Reinstall the complete build if this persists.") }
++            return
++        }
 +        let module = try await Self.makeModule(identifier,requireInstalled:false)
 +        if let request = try await AssetInventory.assetInstallationRequest(supporting: [module]) {
 +            try await request.downloadAndInstall()
 +        }
 +    }
-+    func start(language: String) async throws {
-+        guard analyzer == nil, !starting else { throw RealtimeError("A speech session is already active.") }
++    func start(language: String, engine: SpeechEngine = .apple) async throws {
++        guard analyzer == nil, !parakeetActive, !starting else { throw RealtimeError("A speech session is already active.") }
 +        starting = true
 +        defer { starting = false }
 +        generation += 1; let epoch = generation
 +        audioDuration = 0; lastRecognitionDelay = 0
++        if engine.usesParakeet(language) {
++            do { try await startParakeet(epoch:epoch) }
++            catch { await stop(); throw error }
++            return
++        }
 +        let module = try await Self.makeModule(language,requireInstalled:true)
 +        try Task.checkCancellation()
 +        guard epoch == generation else { throw CancellationError() }
@@ -1950,6 +1993,7 @@ index 0000000..5045706
 +    }
 +    func stop() async {
 +        generation += 1
++        parakeet.stop(); parakeetActive = false
 +        microphone.stop(); input?.finish(); input = nil
 +        results?.cancel(); results = nil
 +        let previous = analyzer; analyzer = nil
@@ -1958,7 +2002,43 @@ index 0000000..5045706
 +    private func fail(_ message: String, epoch: Int) {
 +        guard epoch == generation else { return }
 +        generation += 1; microphone.stop(); input?.finish(); input = nil
++        parakeet.stop(); parakeetActive = false
 +        onFailure?(message)
++    }
++
++    private func startParakeet(epoch: Int) async throws {
++        engineName = "Parakeet English · on device"
++        parakeetTimeline = ParakeetTimeline(); parakeetActive = true
++        parakeet.onText = { [weak self] text, final in
++            guard let self, self.generation == epoch else { return }
++            let processed = self.parakeet.processedDuration
++            self.lastRecognitionDelay = max(0,self.audioDuration-processed)
++            self.onText?(self.parakeetTimeline.ingest(text,final:final,processed:processed))
++        }
++        parakeet.onFailure = { [weak self] _ in
++            self?.fail("Parakeet stopped because audio processing was interrupted, overloaded or too hot. Restart when ready.",epoch:epoch)
++        }
++        do { try await parakeet.prepare() }
++        catch { throw RealtimeError("Parakeet's bundled English model could not load. Try Apple recognition or reinstall the complete build.") }
++        try Task.checkCancellation()
++        guard epoch == generation else { throw CancellationError() }
++        let ports = try await microphone.prepare()
++        try Task.checkCancellation()
++        guard epoch == generation else { throw CancellationError() }
++        guard let port = ports.first(where:{$0.type == AVAudioSession.Port.builtInMic.rawValue}),
++              let format = AVAudioFormat(commonFormat:.pcmFormatFloat32,sampleRate:16000,channels:1,interleaved:false) else {
++            throw RealtimeError("The iPhone microphone is unavailable. End the other recording or call.")
++        }
++        inputName = port.name
++        microphone.onBuffer = { [weak self] buffer in
++            guard let self, self.generation == epoch else { return }
++            self.audioDuration += Double(buffer.frameLength)/buffer.format.sampleRate
++            self.parakeet.offer(buffer)
++        }
++        microphone.onFailure = { [weak self] _ in self?.fail("The microphone route changed or audio was interrupted. Restart when ready.",epoch:epoch) }
++        try await microphone.start(uid:port.uid,format:format)
++        try Task.checkCancellation()
++        guard epoch == generation else { throw CancellationError() }
 +    }
 +}
 diff --git a/official-addon/realtime/LoopbackSignIn.swift b/official-addon/realtime/LoopbackSignIn.swift
@@ -2313,11 +2393,28 @@ index 0000000..1209010
 +}
 diff --git a/official-addon/realtime/RealtimeCore.swift b/official-addon/realtime/RealtimeCore.swift
 new file mode 100644
-index 0000000..acfdbdd
+index 0000000..5b46cc8
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeCore.swift
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,328 @@
 +import Foundation
++
++enum SpeechEngine: String, CaseIterable {
++    case apple = "Apple · on device", parakeet = "Parakeet English · Apple other languages"
++    func usesParakeet(_ language: String) -> Bool {
++        self == .parakeet && SpeechLocalePolicy.key(language).split(separator:"-").first == "en"
++    }
++}
++
++struct ParakeetTimeline {
++    private var start = 0.0
++    mutating func ingest(_ text: String, final: Bool, processed: Double) -> TranscriptPiece {
++        let end = max(start, processed)
++        let piece = TranscriptPiece(start:start,end:end,text:text,final:final)
++        if final { start = end }
++        return piece
++    }
++}
 +
 +enum AssistantPurpose: String {
 +    case cue = "cueMode", nova = "novaMode"
@@ -2763,10 +2860,10 @@ index 0000000..54196d0
 +}
 diff --git a/official-addon/realtime/RealtimePanel.swift b/official-addon/realtime/RealtimePanel.swift
 new file mode 100644
-index 0000000..b2c3df0
+index 0000000..997d2cb
 --- /dev/null
 +++ b/official-addon/realtime/RealtimePanel.swift
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,205 @@
 +import SwiftUI
 +import UIKit
 +import Translation
@@ -2781,6 +2878,9 @@ index 0000000..b2c3df0
 +        Form {
 +            Section {
 +                Picker("Mode",selection:$session.mode) { ForEach(LiveMode.allCases,id:\.self) { Text($0.rawValue).tag($0) } }.disabled(session.running || session.busy)
++                Picker("Speech engine",selection:$session.speechEngine) {
++                    ForEach(SpeechEngine.allCases,id:\.self) { Text($0.rawValue).tag($0) }
++                }.disabled(session.running || session.busy)
 +                Picker("Spoken language",selection:$session.source) {
 +                    ForEach(session.validSpeechLanguages,id:\.self) { Text(SpeechLocalePolicy.label($0)).tag($0) }
 +                    if !session.validSpeechLanguages.contains(session.source) {
@@ -2813,6 +2913,9 @@ index 0000000..b2c3df0
 +                    }
 +                }
 +            }
++            if session.speechEngine == .parakeet {
++                Section { Text(session.speechEngine.usesParakeet(session.source) ? "English recognition uses the bundled Parakeet model on this iPhone. Prepare speech language checks the model; no download or API key is needed. Translation uses the engine you select above." : "This spoken language uses Apple recognition. Parakeet is available for English only. Prepare this language's Apple speech model before starting.").font(.footnote) }
++            }
 +            Section {
 +                Text(session.status).font(.subheadline).accessibilityIdentifier("realtime-status")
 +                if session.busy { ProgressView() }
@@ -2842,6 +2945,7 @@ index 0000000..b2c3df0
 +        }
 +        .navigationTitle("Live tools")
 +        .task(id:session.translationEngine) { await session.loadLanguages() }
++        .task(id:session.speechEngine) { await session.loadLanguages() }
 +        .onDisappear { TIORealtimeHost.closeLivePage() }
 +        .onReceive(NotificationCenter.default.publisher(for:UIApplication.willResignActiveNotification)) { _ in TIORealtimeHost.closeLivePage() }
 +        .alert("Ready to start?",isPresented:$confirmStart) {
@@ -2967,10 +3071,10 @@ index 0000000..b2c3df0
 +}
 diff --git a/official-addon/realtime/RealtimeSession.swift b/official-addon/realtime/RealtimeSession.swift
 new file mode 100644
-index 0000000..b17e29e
+index 0000000..f7c2194
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeSession.swift
-@@ -0,0 +1,476 @@
+@@ -0,0 +1,479 @@
 +import Foundation
 +import UIKit
 +import SwiftUI
@@ -3129,6 +3233,9 @@ index 0000000..b17e29e
 +
 +@available(iOS 26.0, *)
 +@MainActor final class RealtimeSession: ObservableObject {
++    @Published var speechEngine = SpeechEngine(rawValue:UserDefaults.standard.string(forKey:"TurboRealtime.speechEngine") ?? "") ?? .apple {
++        didSet { UserDefaults.standard.set(speechEngine.rawValue,forKey:"TurboRealtime.speechEngine") }
++    }
 +    @Published var mode: LiveMode = .cue
 +    @Published var translationEngine = TranslationEngine(rawValue:UserDefaults.standard.string(forKey:"TurboRealtime.translationEngine") ?? "") ?? .hymt {
 +        didSet { UserDefaults.standard.set(translationEngine.rawValue,forKey:"TurboRealtime.translationEngine") }
@@ -3184,7 +3291,7 @@ index 0000000..b17e29e
 +    private var closedRanges = Set<Double>()
 +
 +    func loadLanguages() async {
-+        languages = SpeechLocalePolicy.unique(await LocalSpeech.languages().map(\.identifier))
++        languages = SpeechLocalePolicy.unique(await LocalSpeech.languages(engine:speechEngine).map(\.identifier))
 +        if let equivalent = languages.first(where:{SpeechLocalePolicy.key($0) == SpeechLocalePolicy.key(source)}) { source = equivalent }
 +        if translationEngine == .hymt { translationLanguages = ["de","en","es","fr","it","ja","ko","pt","ru","yue","zh","zh-Hant"] }
 +        else { translationLanguages = await LanguageAvailability().supportedLanguages.map { $0.minimalIdentifier }.sorted() }
@@ -3196,7 +3303,7 @@ index 0000000..b17e29e
 +        guard !running, !busy else { return }
 +        busy = true; status = "Preparing speech model…"
 +        defer { busy = false }
-+        do { try await speech.prepareLanguage(source); status = "Speech model ready" }
++        do { try await speech.prepareLanguage(source,engine:speechEngine); status = "Speech model ready" }
 +        catch { status = error.localizedDescription }
 +    }
 +    func start() {
@@ -3231,7 +3338,7 @@ index 0000000..b17e29e
 +                speech.onFailure = { [weak self] message in self?.stop(message) }
 +                // Permit results as soon as the engine starts.
 +                running = true
-+                try await speech.start(language:source)
++                try await speech.start(language:source,engine:speechEngine)
 +                guard epoch == runGeneration, !Task.isCancelled else { throw CancellationError() }
 +                busy = false; status = "Listening · iPhone microphone · \(speech.engineName)"
 +                UIApplication.shared.isIdleTimerDisabled = true
@@ -3449,15 +3556,27 @@ index 0000000..b17e29e
 +}
 diff --git a/official-addon/realtime/RealtimeTests.swift b/official-addon/realtime/RealtimeTests.swift
 new file mode 100644
-index 0000000..98bb00d
+index 0000000..395392e
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeTests.swift
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,238 @@
 +import Foundation
 +import CryptoKit
 +
 +@main struct RealtimeTests {
 +    static func main() throws {
++        assert(SpeechEngine.parakeet.usesParakeet("en-US"))
++        assert(SpeechEngine.parakeet.usesParakeet("en_GB"))
++        assert(!SpeechEngine.parakeet.usesParakeet("yue-HK"))
++        assert(!SpeechEngine.parakeet.usesParakeet("zh-CN"))
++        assert(!SpeechEngine.parakeet.usesParakeet("eng"))
++        assert(!SpeechEngine.apple.usesParakeet("en-US"))
++        var timeline = ParakeetTimeline()
++        let p1 = timeline.ingest("How",final:false,processed:0.32)
++        let p2 = timeline.ingest("How are you?",final:true,processed:1.28)
++        let p3 = timeline.ingest("Next",final:false,processed:1.6)
++        assert(p1.start == p2.start && p2.final && p3.start == p2.end)
++        print("PASS: Parakeet English routing, Apple multilingual routing, stable partial/final segment boundaries")
 +        let routes: [String:Any] = ["mode":3,"endpoint":"https://fixture.example/v1/chat/completions","key":"fixture-key","model":"fixture"]
 +        assert(AssistantPurpose.cue.provider(routes)["mode"] as? Int == 2)
 +        assert(AssistantPurpose.nova.provider(routes)["mode"] as? Int == 2)
@@ -4009,21 +4128,57 @@ index 0000000..1788385
 +python3 local-translation/src/prepare_hymt_model.py "$deps/Hy-MT2-original.gguf" "$deps/Hy-MT2-1.8B-STQ43.gguf"
 +cmake -S local-translation/src -B "$deps/mac" -DHYMT_LLAMA_SOURCE="$deps/llama" -DCMAKE_BUILD_TYPE=Release
 +cmake --build "$deps/mac" --target hymt-tests -j 4
+diff --git a/official-addon/realtime/build-parakeet.sh b/official-addon/realtime/build-parakeet.sh
+new file mode 100644
+index 0000000..237921e
+--- /dev/null
++++ b/official-addon/realtime/build-parakeet.sh
+@@ -0,0 +1,26 @@
++#!/bin/bash
++set -euo pipefail
++cd "$(dirname "$0")/.."
++root="$PWD/build/essentials/parakeet"
++revision=eabcd9e36dab48f1f7180165396d84b9688650e0
++mkdir -p "$root"
++if [[ ! -d "$root/FluidAudio/.git" ]]; then
++  git clone https://github.com/FluidInference/FluidAudio.git "$root/FluidAudio"
++  git -C "$root/FluidAudio" checkout --detach "$revision"
++fi
++[[ $(git -C "$root/FluidAudio" rev-parse HEAD) == "$revision" ]]
++git -C "$root/FluidAudio" diff --exit-code
++git -C "$root/FluidAudio" diff --cached --exit-code
++xcrun swift build --package-path "$root/FluidAudio" --scratch-path "$root/build" \
++  --configuration release --build-system swiftbuild --triple arm64-apple-ios26.0 \
++  --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --disable-default-traits --target FluidAudio
++python3 - <<'PY'
++from pathlib import Path
++import shutil
++root=Path('build/essentials/parakeet')
++matches=list((root/'build').rglob('Release-iphoneos/FluidAudio.o'))
++assert len(matches)==1, 'Unexpected FluidAudio build products'
++products=matches[0].parent
++(root/'products-path.txt').write_text(str(products.resolve()))
++shutil.copytree(products/'FluidAudio_FluidAudio.bundle',Path('build/essentials/resources/FluidAudio_FluidAudio.bundle'),dirs_exist_ok=True)
++PY
 diff --git a/official-addon/realtime/build.sh b/official-addon/realtime/build.sh
 new file mode 100644
-index 0000000..cbaba5e
+index 0000000..9badb05
 --- /dev/null
 +++ b/official-addon/realtime/build.sh
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,47 @@
 +#!/bin/bash
 +set -euo pipefail
 +cd "$(dirname "$0")/.."
 +sdk=$(xcrun --sdk iphoneos --show-sdk-path)
 +mkdir -p build/essentials
 +bash realtime/build-hymt.sh
++bash realtime/build-parakeet.sh
++fluid=build/essentials/parakeet/FluidAudio
++products=$(cat build/essentials/parakeet/products-path.txt)
 +native=build/essentials/hymt/ios
 +xcrun --sdk iphoneos swiftc -swift-version 5 -parse-as-library -O \
 +  -import-objc-header local-translation/src/HyMTBridge.h \
++  -I "$products" -I "$fluid/Sources/FastClusterWrapper/include" -I "$fluid/Sources/MachTaskSelfWrapper/include" \
 +  -target arm64-apple-ios26.0 -sdk "$sdk" -emit-library -module-name TurboRealtime \
 +  -Xlinker -install_name -Xlinker @rpath/TurboRealtime.dylib -Xlinker -no_fixup_chains \
 +  realtime/RealtimeCore.swift realtime/TokenValidation.swift realtime/LocalSpeech.swift \
@@ -4032,9 +4187,11 @@ index 0000000..cbaba5e
 +  realtime/AppleNavigation.swift realtime/RealtimePanel.swift realtime/NovaPanel.swift \
 +  local-translation/src/CaptionAudioPipeline.swift local-translation/src/MicrophoneInput.swift \
 +  local-translation/src/HyMTLocalTranslation.swift \
++  local-translation/src/ParakeetSpeech.swift \
++  "$products/FluidAudio.o" "$products/FastClusterWrapper.o" "$products/MachTaskSelfWrapper.o" \
 +  "$native/libTurboHyMT.a" "$native/llama-build/src/libllama.a" \
 +  "$native/llama-build/ggml/src/libggml.a" "$native/llama-build/ggml/src/libggml-cpu.a" "$native/llama-build/ggml/src/libggml-base.a" \
-+  -lc++ -framework Accelerate \
++  -lc++ -framework Accelerate -framework CoreML -framework AVFoundation \
 +  -o build/essentials/TurboRealtime.dylib
 +codesign --force --sign - build/essentials/TurboRealtime.dylib
 +codesign --verify --strict build/essentials/TurboRealtime.dylib
