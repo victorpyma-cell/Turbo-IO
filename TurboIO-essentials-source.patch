@@ -2103,13 +2103,14 @@ index 0000000..15c7a41
 +}
 diff --git a/official-addon/realtime/NovaPanel.swift b/official-addon/realtime/NovaPanel.swift
 new file mode 100644
-index 0000000..10a69a5
+index 0000000..5996e8f
 --- /dev/null
 +++ b/official-addon/realtime/NovaPanel.swift
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,180 @@
 +import Foundation
 +import SwiftUI
 +import Combine
++import UIKit
 +
 +struct NovaNote: Codable, Identifiable {
 +    var id = UUID()
@@ -2283,6 +2284,7 @@ index 0000000..10a69a5
 +        }.navigationTitle("Nova")
 +            .onAppear { briefing = library.briefing }
 +            .onDisappear { chat.cancel() }
++            .onReceive(NotificationCenter.default.publisher(for:UIApplication.willResignActiveNotification)) { _ in chat.cancel() }
 +    }
 +}
 diff --git a/official-addon/realtime/RealtimeCore.swift b/official-addon/realtime/RealtimeCore.swift
@@ -2725,10 +2727,10 @@ index 0000000..54196d0
 +}
 diff --git a/official-addon/realtime/RealtimePanel.swift b/official-addon/realtime/RealtimePanel.swift
 new file mode 100644
-index 0000000..19e5722
+index 0000000..0bf4141
 --- /dev/null
 +++ b/official-addon/realtime/RealtimePanel.swift
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,195 @@
 +import SwiftUI
 +import UIKit
 +import Translation
@@ -2802,6 +2804,7 @@ index 0000000..19e5722
 +        .navigationTitle("Live tools")
 +        .task(id:session.translationEngine) { await session.loadLanguages() }
 +        .onDisappear { TIORealtimeHost.closeLivePage() }
++        .onReceive(NotificationCenter.default.publisher(for:UIApplication.willResignActiveNotification)) { _ in TIORealtimeHost.closeLivePage() }
 +        .alert("Ready to start?",isPresented:$confirmStart) {
 +            Button("Cancel",role:.cancel) {}
 +            Button("Start") { session.start() }
@@ -2925,10 +2928,10 @@ index 0000000..19e5722
 +}
 diff --git a/official-addon/realtime/RealtimeSession.swift b/official-addon/realtime/RealtimeSession.swift
 new file mode 100644
-index 0000000..1905b9b
+index 0000000..b17e29e
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeSession.swift
-@@ -0,0 +1,468 @@
+@@ -0,0 +1,476 @@
 +import Foundation
 +import UIKit
 +import SwiftUI
@@ -3127,6 +3130,7 @@ index 0000000..1905b9b
 +    private var debounce: Task<Void,Never>?
 +    private var cueTask: Task<Void,Never>?
 +    private var cueExpiry: Task<Void,Never>?
++    private var sessionExpiry: Task<Void,Never>?
 +    private var cueGate = CueQuestionGate()
 +    private var startTask: Task<Void,Never>?
 +    private var stopTask: Task<Void,Never>?
@@ -3182,6 +3186,7 @@ index 0000000..1905b9b
 +                try GlassesDisplay.shared.acquire(id,enabled:showOnGlasses && mode != .standby) { [weak self] message in self?.stop(message) }
 +                window.reset(); utterance = UtteranceWindow(maxCharacters:300); voiceWindow = VoiceCommandWindow(); closedRanges.removeAll(); completedContext.removeAll(); latest = ""; captions = ""; output = ""; lastSubmitted = ""; timing = ""
 +                cueGate = CueQuestionGate()
++                lastAnswer = ""
 +                translationQueue = TranslationQueue(); translationCards = TranslationCards(); translationUtterance = TranslationPhraseWindow(); translationLastStarted = -Double.infinity
 +                speech.onText = { [weak self] piece in self?.receive(piece) }
 +                speech.onFailure = { [weak self] message in self?.stop(message) }
@@ -3191,6 +3196,11 @@ index 0000000..1905b9b
 +                guard epoch == runGeneration, !Task.isCancelled else { throw CancellationError() }
 +                busy = false; status = "Listening · iPhone microphone · \(speech.engineName)"
 +                UIApplication.shared.isIdleTimerDisabled = true
++                sessionExpiry = Task { [weak self] in
++                    try? await Task.sleep(nanoseconds:1_200_000_000_000)
++                    guard !Task.isCancelled, let self, self.running, self.runGeneration == epoch else { return }
++                    self.stop("20-minute listening session ended. Tap Start to continue.")
++                }
 +            } catch {
 +                if epoch == runGeneration { stop(error is CancellationError ? "Stopped" : error.localizedDescription) }
 +            }
@@ -3199,6 +3209,7 @@ index 0000000..1905b9b
 +    func stop(_ message: String = "Stopped") {
 +        runGeneration += 1; let epoch = runGeneration; revision += 1; running = false; busy = true; status = message
 +        startTask?.cancel(); startTask = nil; debounce?.cancel(); cueTask?.cancel(); cueExpiry?.cancel(); cueExpiry = nil; translateTask?.cancel()
++        sessionExpiry?.cancel(); sessionExpiry = nil
 +        cancelVoiceStop()
 +        debounce = nil; cueTask = nil; translateTask = nil; translationQueue = TranslationQueue()
 +        translatedSession?.cancel(); translatedSession = nil
