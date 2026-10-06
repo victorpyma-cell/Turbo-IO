@@ -11,7 +11,7 @@ index b50ca3a..07204c4 100644
  
  The Opus 1.5.2 source tree under `core-probe/Vendor/opus-1.5.2` is now included in full for the Harmony native audio CMake build, in addition to the earlier iOS build dependencies. Its upstream `COPYING` and source notices remain unchanged.
 diff --git a/official-addon/Addon.m b/official-addon/Addon.m
-index eb3958b..9478725 100644
+index eb3958b..c523378 100644
 --- a/official-addon/Addon.m
 +++ b/official-addon/Addon.m
 @@ -4,17 +4,35 @@
@@ -174,7 +174,7 @@ index eb3958b..9478725 100644
 +                    __block id observer=nil;observer=[NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n){[NSNotificationCenter.defaultCenter removeObserver:observer];observer=nil;Alert(@"Voice command",@"Keep RayNeo AI open, wake the glasses assistant, and repeat the command. No recording was started.");}];
 +                    return;
 +                }
-+                TIOHandleRealtimeVoiceCommand(TopController(),command,^NSDictionary *{NSString *endpoint=[Prefs stringForKey:@"endpoint"]?:@"";return @{@"mode":@([Prefs integerForKey:@"mode"]),@"strata":@([Prefs boolForKey:@"strataFast"]),@"endpoint":endpoint,@"model":[Prefs stringForKey:@"model"]?:@"",@"key":ReadKey(endpoint)?:@""};});
++                TIOHandleRealtimeVoiceCommand(TopController(),command,^NSDictionary *{NSString *endpoint=[Prefs stringForKey:@"endpoint"]?:@"";return @{@"mode":@([Prefs integerForKey:@"mode"]),@"cueMode":([Prefs objectForKey:@"cueMode"]?:@2),@"novaMode":([Prefs objectForKey:@"novaMode"]?:@2),@"strata":@([Prefs boolForKey:@"strataFast"]),@"endpoint":endpoint,@"model":[Prefs stringForKey:@"model"]?:@"",@"key":ReadKey(endpoint)?:@""};});
 +                Diagnostic=@"Turbo voice command routed; see the live tool status.";return;
 +            }
 +        }
@@ -450,10 +450,10 @@ index 9e05dbc..9187db6 100644
  @implementation TIOConversationHistory {
 diff --git a/official-addon/EssentialsPanel.inc b/official-addon/EssentialsPanel.inc
 new file mode 100644
-index 0000000..b84b0de
+index 0000000..98ca25d
 --- /dev/null
 +++ b/official-addon/EssentialsPanel.inc
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,154 @@
 +// Included by Addon.m so the small settings surface shares its existing
 +// Keychain, request cancellation, and compatibility guards.
 +@interface TIOPanel : UITableViewController
@@ -476,7 +476,7 @@ index 0000000..b84b0de
 +- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {return [self.sections[section][@"rows"] count];}
 +- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {return self.sections[section][@"title"];}
 +- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-+    if([self.page isEqual:@"model"]&&section==0)return @"Choose RayNeo, your ChatGPT account, or a custom API for ordinary voice answers. ChatGPT uses account sign-in; no API key is needed. Nova and Live Cue use the provider you select here. The original RayNeo AI phone chat keeps its own provider.";
++    if([self.page isEqual:@"model"]&&section==0)return @"Choose RayNeo, your ChatGPT account, or a custom API for ordinary voice answers. ChatGPT uses account sign-in; no API key is needed. Live Cue and Nova Q&A each have their own provider setting; both default to Custom API. The original RayNeo AI phone chat keeps its own provider.";
 +    if([self.page isEqual:@"model"]&&section==1)return @"On-device captions and translation use the iPhone microphone. Navigation uses Apple Maps. Requires iOS 26 or later.";
 +    if([self.page isEqual:@"model"]&&section==2)return @"Context stays in memory and resets when the app closes.";
 +    if([self.page isEqual:@"voice"]&&section==0)return @"English speech generated on the iPhone. Requires connected Bluetooth headphones or another supported audio output; a glasses display alone cannot play sound.";
@@ -493,6 +493,7 @@ index 0000000..b84b0de
 +    cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;TIOStyleResearchCell(cell);
 +    if([key isEqual:@"mode"]){NSInteger mode=[Prefs integerForKey:@"mode"];cell.detailTextLabel.text=mode==3?(TIOChatGPTReady()?@"ChatGPT":@"ChatGPT — sign-in or model needed"):(mode==2?@"Custom API":@"RayNeo");}
 +    if([key isEqual:@"api"])cell.detailTextLabel.text=[Prefs stringForKey:@"model"].length?[Prefs stringForKey:@"model"]:@"Not configured";
++    if([@[@"cueMode",@"novaMode"] containsObject:key]){NSInteger mode=([Prefs objectForKey:key]?:@2).integerValue;cell.detailTextLabel.text=mode==3?@"ChatGPT account":@"Custom API · Strata when configured";}
 +    if([key isEqual:@"history"])cell.detailTextLabel.text=[NSString stringWithFormat:@"%lu messages in this session",(unsigned long)[Controller.history snapshot].count];
 +    if([key isEqual:@"tts"]||[key isEqual:@"exit"]){
 +        BOOL speech=[key isEqual:@"tts"];UISwitch *toggle=[UISwitch new];
@@ -528,20 +529,19 @@ index 0000000..b84b0de
 +        [Controller cancel];if(changed)[Controller.history clear];
 +        [Prefs setObject:url.absoluteString forKey:@"endpoint"];[Prefs setObject:model forKey:@"model"];
 +        [Prefs setBool:((strataPreset||[Prefs boolForKey:@"strataFast"])&&[model isEqual:@"qwen3.8-flash-next-coder-iq1_m"]) forKey:@"strataFast"];
-+        // Saving explicitly selects the configured custom provider.
-+        [Prefs setInteger:2 forKey:@"mode"];
++        // Saving credentials never changes the independent provider selections.
 +        [weak.tableView reloadData];
 +    }]];
 +    [self presentViewController:dialog animated:YES completion:nil];
 +}
 +- (void)chooseProvider {
-+    UIAlertController *dialog=[UIAlertController alertControllerWithTitle:@"Answer provider" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
++    UIAlertController *dialog=[UIAlertController alertControllerWithTitle:@"OK RayNeo provider" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
 +    __weak typeof(self) weak=self;
 +    [dialog addAction:[UIAlertAction actionWithTitle:@"RayNeo" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){[Controller cancel];[Controller.history clear];[Prefs setInteger:0 forKey:@"mode"];[weak.tableView reloadData];}]];
 +    [dialog addAction:[UIAlertAction actionWithTitle:@"ChatGPT account" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
 +        if(!HooksReady){Alert(@"Unavailable",@"This app version does not match the verified voice interface.");return;}
 +        [Controller cancel];[Controller.history clear];[Prefs setInteger:3 forKey:@"mode"];[weak.tableView reloadData];
-+        if(!TIOChatGPTReady())dispatch_async(dispatch_get_main_queue(),^{if(weak)TIOOpenRealtime(weak,@"chatgpt",^NSDictionary *{NSString *endpoint=[Prefs stringForKey:@"endpoint"]?:@"";return @{@"mode":@([Prefs integerForKey:@"mode"]),@"strata":@([Prefs boolForKey:@"strataFast"]),@"endpoint":endpoint,@"model":[Prefs stringForKey:@"model"]?:@"",@"key":ReadKey(endpoint)?:@""};});});
++        if(!TIOChatGPTReady())dispatch_async(dispatch_get_main_queue(),^{if(weak)TIOOpenRealtime(weak,@"chatgpt",^NSDictionary *{NSString *endpoint=[Prefs stringForKey:@"endpoint"]?:@"";return @{@"mode":@([Prefs integerForKey:@"mode"]),@"cueMode":([Prefs objectForKey:@"cueMode"]?:@2),@"novaMode":([Prefs objectForKey:@"novaMode"]?:@2),@"strata":@([Prefs boolForKey:@"strataFast"]),@"endpoint":endpoint,@"model":[Prefs stringForKey:@"model"]?:@"",@"key":ReadKey(endpoint)?:@""};});});
 +    }]];
 +    [dialog addAction:[UIAlertAction actionWithTitle:@"Custom API" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
 +        NSString *endpoint=[Prefs stringForKey:@"endpoint"]?:@"";
@@ -552,6 +552,28 @@ index 0000000..b84b0de
 +    [dialog addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
 +    dialog.popoverPresentationController.sourceView=self.view;dialog.popoverPresentationController.sourceRect=CGRectMake(self.view.bounds.size.width/2,100,1,1);
 +    [self presentViewController:dialog animated:YES completion:nil];
++}
++- (void)chooseToolProvider:(NSString *)key {
++    NSString *title=[key isEqual:@"cueMode"]?@"Live Cue provider":@"Nova Q&A provider";
++    UIAlertController *dialog=[UIAlertController alertControllerWithTitle:title message:@"Only this feature changes. A failed connection will not switch providers." preferredStyle:UIAlertControllerStyleActionSheet];
++    __weak typeof(self) weak=self;
++    for(NSNumber *mode in @[@2,@3]){
++        [dialog addAction:[UIAlertAction actionWithTitle:mode.integerValue==3?@"ChatGPT account":@"Custom API / Strata" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
++            [Prefs setInteger:mode.integerValue forKey:key];[weak.tableView reloadData];
++        }]];
++    }
++    [dialog addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
++    dialog.popoverPresentationController.sourceView=self.view;dialog.popoverPresentationController.sourceRect=CGRectMake(self.view.bounds.size.width/2,100,1,1);
++    [self presentViewController:dialog animated:YES completion:nil];
++}
++- (void)useSplitProviders {
++    if(!HooksReady||!TIOChatGPTReady()){Alert(@"ChatGPT needed",@"Sign in and choose a ChatGPT model first. The glasses voice interface must be compatible.");return;}
++    NSString *endpoint=[Prefs stringForKey:@"endpoint"]?:@"";
++    if(!TIOValidateEndpoint(endpoint)||![[Prefs stringForKey:@"model"] isEqual:@"qwen3.8-flash-next-coder-iq1_m"]||!ReadKey(endpoint).length){Alert(@"Strata needed",@"Save the Strata Coder preset with your endpoint and key first.");return;}
++    [Controller cancel];[Controller.history clear];
++    [Prefs setInteger:3 forKey:@"mode"];[Prefs setInteger:2 forKey:@"cueMode"];[Prefs setInteger:2 forKey:@"novaMode"];
++    [self.tableView reloadData];
++    Alert(@"Providers saved",@"OK RayNeo: ChatGPT. Live Cue and Nova Q&A: Strata. Translation keeps its own engine and language selections.");
 +}
 +- (void)clearContext {
 +    UIAlertController *dialog=[UIAlertController alertControllerWithTitle:@"Clear conversation context?" message:@"This clears the custom assistant's in-memory history and cancels its current answer." preferredStyle:UIAlertControllerStyleAlert];
@@ -573,9 +595,11 @@ index 0000000..b84b0de
 +- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)ip {
 +    [tableView deselectRowAtIndexPath:ip animated:YES];NSString *key=self.sections[ip.section][@"rows"][ip.row][@"key"];
 +    if([key isEqual:@"mode"])[self chooseProvider];
++    else if([@[@"cueMode",@"novaMode"] containsObject:key])[self chooseToolProvider:key];
++    else if([key isEqual:@"splitProviders"])[self useSplitProviders];
 +    else if([@[@"nova",@"standby",@"liveCue",@"translate",@"navigate",@"chatgpt"] containsObject:key]){
 +        [Controller cancel];[VoiceTTS cancel];
-+        TIOOpenRealtime(self,key,^NSDictionary *{NSString *endpoint=[Prefs stringForKey:@"endpoint"]?:@"";return @{@"mode":@([Prefs integerForKey:@"mode"]),@"strata":@([Prefs boolForKey:@"strataFast"]),@"endpoint":endpoint,@"model":[Prefs stringForKey:@"model"]?:@"",@"key":ReadKey(endpoint)?:@""};});
++        TIOOpenRealtime(self,key,^NSDictionary *{NSString *endpoint=[Prefs stringForKey:@"endpoint"]?:@"";return @{@"mode":@([Prefs integerForKey:@"mode"]),@"cueMode":([Prefs objectForKey:@"cueMode"]?:@2),@"novaMode":([Prefs objectForKey:@"novaMode"]?:@2),@"strata":@([Prefs boolForKey:@"strataFast"]),@"endpoint":endpoint,@"model":[Prefs stringForKey:@"model"]?:@"",@"key":ReadKey(endpoint)?:@""};});
 +    }
 +    else if([key isEqual:@"api"])[self configureProvider:NO];
 +    else if([key isEqual:@"strata"])[self configureProvider:YES];
@@ -691,7 +715,7 @@ index 75df10a..134d0ae 100644
      // Not an assertion of compatibility with a
      // different firmware: the fresh preview ACK is mandatory every session.
 diff --git a/official-addon/ResearchCatalog.m b/official-addon/ResearchCatalog.m
-index d15363a..d65b793 100644
+index d15363a..c041152 100644
 --- a/official-addon/ResearchCatalog.m
 +++ b/official-addon/ResearchCatalog.m
 @@ -1,6 +1,20 @@
@@ -701,7 +725,7 @@ index d15363a..d65b793 100644
  NSArray<NSDictionary *> *TIOResearchSections(NSString *page){
 +#if TIO_ESSENTIALS
 +    if([page isEqual:@"model"])return @[
-+        @{@"title":@"Assistant",@"rows":@[Row(@"nova",@"Nova · chat, notes & briefing",@"sparkles",0,2),Row(@"standby",@"Listen for Nova",@"mic",0,3),Row(@"strata",@"Strata Coder preset",@"desktopcomputer",0,4),Row(@"mode",@"Answer provider",@"bubble.left.and.bubble.right",0,0),Row(@"api",@"Custom API settings",@"key",0,1)]},
++        @{@"title":@"Assistant",@"rows":@[Row(@"nova",@"Nova · chat, notes & briefing",@"sparkles",0,2),Row(@"standby",@"Listen for Nova",@"mic",0,3),Row(@"strata",@"Strata Coder preset",@"desktopcomputer",0,4),Row(@"mode",@"OK RayNeo provider",@"bubble.left.and.bubble.right",0,0),Row(@"cueMode",@"Live Cue provider",@"text.bubble",0,5),Row(@"novaMode",@"Nova Q&A provider",@"sparkles",0,6),Row(@"splitProviders",@"Use ChatGPT voice + Strata tools",@"arrow.triangle.branch",0,7),Row(@"api",@"Custom API settings",@"key",0,1)]},
 +        @{@"title":@"Live tools",@"rows":@[Row(@"liveCue",@"Live Cue",@"text.bubble",1,0),Row(@"translate",@"Live translation & captions",@"character.bubble",1,1),Row(@"navigate",@"Navigate",@"location",1,2),Row(@"chatgpt",@"ChatGPT account",@"person.crop.circle",1,3)]},
 +        @{@"title":@"Conversation",@"rows":@[Row(@"history",@"Clear conversation context",@"clock.arrow.circlepath",0,4)]}];
 +    if([page isEqual:@"voice"])return @[
@@ -1647,7 +1671,7 @@ index 0000000..1790d06
 +}
 diff --git a/official-addon/realtime/CueService.swift b/official-addon/realtime/CueService.swift
 new file mode 100644
-index 0000000..91bbd3a
+index 0000000..8f6b974
 --- /dev/null
 +++ b/official-addon/realtime/CueService.swift
 @@ -0,0 +1,147 @@
@@ -1711,8 +1735,8 @@ index 0000000..91bbd3a
 +        catch ResponseStream.Failure.oversized { throw RealtimeError("ChatGPT exceeded this answer's display limit.") }
 +        catch ResponseStream.Failure.incomplete { throw RealtimeError("The ChatGPT connection ended before a complete answer arrived. Try again when the connection is stable.") }
 +    }
-+    static func validateProvider(_ configured: [String:Any]? = nil) throws {
-+        let provider = configured ?? TIORealtimeHost.call("provider")
++    static func validateProvider(_ configured: [String:Any]? = nil, purpose: AssistantPurpose = .cue) throws {
++        let provider = configured ?? purpose.provider(TIORealtimeHost.call("provider"))
 +        switch provider["mode"] as? Int ?? 0 {
 +        case 3:
 +            guard TIORealtimeHost.chatGPTReady() else { throw RealtimeError("Sign in and select a model under ChatGPT account.") }
@@ -1720,7 +1744,7 @@ index 0000000..91bbd3a
 +            guard let url = URL(string:provider["endpoint"] as? String ?? ""), url.scheme == "https", url.host != nil, url.user == nil, url.password == nil, url.query == nil, url.fragment == nil, url.path.hasSuffix("/chat/completions") else { throw RealtimeError("Use the full HTTPS endpoint ending in /chat/completions.") }
 +            guard !(provider["model"] as? String ?? "").isEmpty else { throw RealtimeError("Set the server's model ID in Custom API settings.") }
 +            guard !(provider["key"] as? String ?? "").isEmpty else { throw RealtimeError("Save this endpoint's API key in Custom API settings.") }
-+        default: throw RealtimeError("Choose ChatGPT account or Custom API under Answer provider for Nova and Live Cue.")
++        default: throw RealtimeError("Choose ChatGPT account or Custom API under \(purpose.label) provider in Assistant.")
 +        }
 +    }
 +    func answer(question: String, context: String, language: String, update: @escaping (String) -> Void) async throws -> String {
@@ -1728,13 +1752,13 @@ index 0000000..91bbd3a
 +        let prompt = "Recent context:\n\(context.suffix(2500))\n\nLatest utterance:\n\(question.prefix(1500))"
 +        return try await respond(instructions:instructions,prompt:prompt,maxTokens:160,update:update)
 +    }
-+    func respond(instructions: String, prompt: String, maxTokens: Int = 800, update: @escaping (String) -> Void) async throws -> String {
-+        let provider = TIORealtimeHost.call("provider")
++    func respond(instructions: String, prompt: String, maxTokens: Int = 800, purpose: AssistantPurpose = .cue, update: @escaping (String) -> Void) async throws -> String {
++        let provider = purpose.provider(TIORealtimeHost.call("provider"))
 +        let endpoint = provider["endpoint"] as? String ?? ""
 +        let key = provider["key"] as? String ?? ""
 +        let model = provider["model"] as? String ?? ""
 +        let subscription = (provider["mode"] as? Int) == 3
-+        try Self.validateProvider(provider)
++        try Self.validateProvider(provider, purpose:purpose)
 +        let url: URL
 +        let bearer: String
 +        var body: [String: Any]
@@ -2103,7 +2127,7 @@ index 0000000..15c7a41
 +}
 diff --git a/official-addon/realtime/NovaPanel.swift b/official-addon/realtime/NovaPanel.swift
 new file mode 100644
-index 0000000..5996e8f
+index 0000000..1209010
 --- /dev/null
 +++ b/official-addon/realtime/NovaPanel.swift
 @@ -0,0 +1,180 @@
@@ -2171,10 +2195,10 @@ index 0000000..5996e8f
 +    private var request: Task<Void,Never>?
 +    private var generation = 0
 +    var providerLabel: String {
-+        let p = TIORealtimeHost.call("provider")
++        let p = AssistantPurpose.nova.provider(TIORealtimeHost.call("provider"))
 +        if p["mode"] as? Int == 3 { return "ChatGPT · \(ChatGPTAccount.shared.selectedModel ?? "choose a model")" }
 +        if p["mode"] as? Int == 2 { return "Custom API · \(p["model"] as? String ?? "choose a model")" }
-+        return "Select ChatGPT or Custom API in Assistant"
++        return "Select the Nova Q&A provider in Assistant"
 +    }
 +    func cancel() { generation += 1; request?.cancel(); request = nil; busy = false; if !completed { status = "Cancelled · partial answer not saved" } }
 +    func clear() { cancel(); turns = []; answer = ""; lastQuestion = ""; completed = false; status = "Conversation cleared"; timing = "" }
@@ -2182,7 +2206,7 @@ index 0000000..5996e8f
 +        let question = (prompt ?? draft).trimmingCharacters(in:.whitespacesAndNewlines)
 +        guard !question.isEmpty, !busy else { return }
 +        guard question.count <= 8000 else { status = "Keep each message under 8,000 characters."; return }
-+        do { try CueService.validateProvider() } catch { status = error.localizedDescription; return }
++        do { try CueService.validateProvider(purpose:.nova) } catch { status = error.localizedDescription; return }
 +        generation += 1; let epoch = generation
 +        lastQuestion = question; answer = ""; completed = false; busy = true; status = "Connecting…"; timing = ""
 +        if prompt == nil { draft = "" }
@@ -2195,7 +2219,7 @@ index 0000000..5996e8f
 +            defer { if self.generation == epoch { self.busy = false; self.request = nil } }
 +            do {
 +                var first = true
-+                let result = try await CueService().respond(instructions:"You are Nova, a concise personal assistant. Answer the current request directly, usually under 120 words. Give detail when requested. Use the optional briefing and recent conversation only as context. You cannot operate apps, browse, send messages, or access calendars. Do not claim actions or invent personal facts. When summarizing notes, preserve uncertainty, names, dates and commitments; never invent them.",prompt:input) { [weak self] text in
++                let result = try await CueService().respond(instructions:"You are Nova, a concise personal assistant. Answer the current request directly, usually under 120 words. Give detail when requested. Use the optional briefing and recent conversation only as context. You cannot operate apps, browse, send messages, or access calendars. Do not claim actions or invent personal facts. When summarizing notes, preserve uncertainty, names, dates and commitments; never invent them.",prompt:input,purpose:.nova) { [weak self] text in
 +                    guard let self, self.generation == epoch, !Task.isCancelled else { return }
 +                    if first { self.timing = String(format:"First text %.1fs",Date().timeIntervalSince(started)); first = false }
 +                    self.answer = text; self.status = "Answer arriving…"
@@ -2289,11 +2313,23 @@ index 0000000..5996e8f
 +}
 diff --git a/official-addon/realtime/RealtimeCore.swift b/official-addon/realtime/RealtimeCore.swift
 new file mode 100644
-index 0000000..7c980d7
+index 0000000..acfdbdd
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeCore.swift
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,311 @@
 +import Foundation
++
++enum AssistantPurpose: String {
++    case cue = "cueMode", nova = "novaMode"
++    var label: String { self == .cue ? "Live Cue" : "Nova Q&A" }
++    // Tools default to the configured local API independently of glasses voice.
++    // An invalid explicit choice fails validation rather than changing providers.
++    func provider(_ configuration: [String:Any]) -> [String:Any] {
++        var selected = configuration
++        selected["mode"] = configuration[rawValue] as? Int ?? 2
++        return selected
++    }
++}
 +
 +enum SpeechLocalePolicy {
 +    static func key(_ identifier: String) -> String { identifier.replacingOccurrences(of:"_",with:"-").lowercased() }
@@ -2727,10 +2763,10 @@ index 0000000..54196d0
 +}
 diff --git a/official-addon/realtime/RealtimePanel.swift b/official-addon/realtime/RealtimePanel.swift
 new file mode 100644
-index 0000000..0bf4141
+index 0000000..b2c3df0
 --- /dev/null
 +++ b/official-addon/realtime/RealtimePanel.swift
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,198 @@
 +import SwiftUI
 +import UIKit
 +import Translation
@@ -2751,6 +2787,9 @@ index 0000000..0bf4141
 +                        Text("\(SpeechLocalePolicy.label(session.source)) · unavailable for this engine").tag(session.source).disabled(true)
 +                    }
 +                }.disabled(session.running || session.busy)
++                if session.mode == .cue {
++                    Text("Provider: \(AssistantPurpose.cue.provider(TIORealtimeHost.call("provider"))["mode"] as? Int == 3 ? "ChatGPT" : "Custom API")").font(.subheadline)
++                }
 +                if session.mode == .translate {
 +                    Picker("Translation engine",selection:$session.translationEngine) {
 +                        ForEach(TranslationEngine.allCases,id:\.self) { Text($0.rawValue).tag($0) }
@@ -3410,15 +3449,26 @@ index 0000000..b17e29e
 +}
 diff --git a/official-addon/realtime/RealtimeTests.swift b/official-addon/realtime/RealtimeTests.swift
 new file mode 100644
-index 0000000..d292b1a
+index 0000000..98bb00d
 --- /dev/null
 +++ b/official-addon/realtime/RealtimeTests.swift
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,226 @@
 +import Foundation
 +import CryptoKit
 +
 +@main struct RealtimeTests {
 +    static func main() throws {
++        let routes: [String:Any] = ["mode":3,"endpoint":"https://fixture.example/v1/chat/completions","key":"fixture-key","model":"fixture"]
++        assert(AssistantPurpose.cue.provider(routes)["mode"] as? Int == 2)
++        assert(AssistantPurpose.nova.provider(routes)["mode"] as? Int == 2)
++        var independent = routes; independent["cueMode"] = 3; independent["novaMode"] = 2; independent["mode"] = 0
++        assert(AssistantPurpose.cue.provider(independent)["mode"] as? Int == 3)
++        assert(AssistantPurpose.nova.provider(independent)["mode"] as? Int == 2)
++        assert(AssistantPurpose.nova.provider(independent)["endpoint"] as? String == routes["endpoint"] as? String)
++        assert(AssistantPurpose.nova.provider(independent)["key"] as? String == "fixture-key")
++        independent["novaMode"] = 0
++        assert(AssistantPurpose.nova.provider(independent)["mode"] as? Int == 0)
++        print("PASS: independent glasses/Live Cue/Nova routing; local defaults, credentials retained, invalid explicit route never falls back")
 +        let locales = ["zh_CN","zh-CN","zh_Hant_TW","yue_HK","yue_Hant_CN"]
 +        let unique = SpeechLocalePolicy.unique(locales)
 +        assert(unique.count == 4)
