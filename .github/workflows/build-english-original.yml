@@ -26,6 +26,16 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = 6268990646ebd41188cb084bb8ef96d70e94b869
+          export DEVELOPER_DIR="$(python3 - <<'PY'
+          import pathlib,re
+          choices=[]
+          for p in pathlib.Path('/Applications').glob('Xcode*.app'):
+              m=re.search(r'Xcode[_-](\d+)\.(\d+)',p.name)
+              if m and int(m[1])>=26: choices.append(((int(m[1]),int(m[2])),p))
+          assert choices, 'Xcode 26 is required by cycling directions'
+          print(max(choices)[1]/'Contents/Developer')
+          PY
+          )"
           xcodebuild -version
           bash official-addon/focus-edition/build.sh embedded com.rayneo.venus.pub
           test -z "$(git diff --name-only)"
