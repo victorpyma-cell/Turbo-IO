@@ -1,0 +1,55 @@
+name: Build Original English Edition
+on:
+  workflow_dispatch:
+  push:
+    paths: [.github/workflows/build-english-original.yml]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: sattarde/rayneo-ios-english-edition
+          ref: 6268990646ebd41188cb084bb8ef96d70e94b869
+          persist-credentials: false
+      - name: Compile unchanged English edition
+        shell: bash
+        env:
+          TIO_OTA_FLASH_ENABLED: '1'
+          TIO_IMAGE_RX_LAB: '1'
+          TIO_IMAGE_RX_WIDE: '1'
+          TIO_DISPLAY_PHONE: '1'
+          TIO_DISPLAY_FLASH: '1'
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 6268990646ebd41188cb084bb8ef96d70e94b869
+          xcodebuild -version
+          bash official-addon/focus-edition/build.sh embedded com.rayneo.venus.pub
+          test -z "$(git diff --name-only)"
+      - name: Verify and collect addon
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir artifact
+          cp official-addon/focus-edition/build/image-rx-lab/TurboIOPrivateAddon.dylib LICENSE NOTICE THIRD_PARTY_NOTICES.md artifact/
+          cp -R official-addon/focus-edition/TurboIOArt artifact/
+          python3 - <<'PY'
+          import hashlib, json, pathlib, subprocess
+          root=pathlib.Path('artifact')
+          addon=root/'TurboIOPrivateAddon.dylib'
+          assert subprocess.check_output(['lipo','-archs',str(addon)],text=True).strip()=='arm64'
+          subprocess.run(['codesign','--verify','--strict',str(addon)],check=True)
+          symbols=subprocess.check_output(['nm','-gU',str(addon)],text=True)
+          assert '_TIOOTAFlashBuild' in symbols
+          manifest={'source_repository':'sattarde/rayneo-ios-english-edition','source_commit':'6268990646ebd41188cb084bb8ef96d70e94b869','source_modified':False,'target_bundle_id':'com.rayneo.venus.pub','status':'COMPILED_NOT_DEVICE_TESTED','firmware_flashed':False,'file_hashes':{p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob('*') if p.is_file()}}
+          (root/'build-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: english-original-${{ github.run_id }}
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 7
