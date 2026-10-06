@@ -37,7 +37,7 @@ jobs:
           PY
           )"
           xcodebuild -version
-          bash official-addon/focus-edition/build.sh embedded com.rayneo.venus.pub
+          bash official-addon/focus-edition/build.sh embedded com.victorpyma.turboio
           test -z "$(git diff --name-only)"
       - name: Verify and collect addon
         shell: bash
@@ -54,7 +54,7 @@ jobs:
           subprocess.run(['codesign','--verify','--strict',str(addon)],check=True)
           symbols=subprocess.check_output(['nm','-gU',str(addon)],text=True)
           assert '_TIOOTAFlashBuild' in symbols
-          manifest={'source_repository':'sattarde/rayneo-ios-english-edition','source_commit':'6268990646ebd41188cb084bb8ef96d70e94b869','source_modified':False,'target_bundle_id':'com.rayneo.venus.pub','status':'COMPILED_NOT_DEVICE_TESTED','firmware_flashed':False,'file_hashes':{p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob('*') if p.is_file()}}
+          manifest={'source_repository':'sattarde/rayneo-ios-english-edition','source_commit':'6268990646ebd41188cb084bb8ef96d70e94b869','source_modified':False,'target_bundle_id':'com.victorpyma.turboio','status':'COMPILED_NOT_DEVICE_TESTED','firmware_flashed':False,'file_hashes':{p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob('*') if p.is_file()}}
           (root/'build-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
           PY
       - uses: actions/upload-artifact@v4
