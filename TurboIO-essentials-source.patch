@@ -450,7 +450,7 @@ index 9e05dbc..9187db6 100644
  @implementation TIOConversationHistory {
 diff --git a/official-addon/EssentialsPanel.inc b/official-addon/EssentialsPanel.inc
 new file mode 100644
-index 0000000..98ca25d
+index 0000000..031e29f
 --- /dev/null
 +++ b/official-addon/EssentialsPanel.inc
 @@ -0,0 +1,154 @@
@@ -493,7 +493,7 @@ index 0000000..98ca25d
 +    cell.accessoryType=UITableViewCellAccessoryDisclosureIndicator;TIOStyleResearchCell(cell);
 +    if([key isEqual:@"mode"]){NSInteger mode=[Prefs integerForKey:@"mode"];cell.detailTextLabel.text=mode==3?(TIOChatGPTReady()?@"ChatGPT":@"ChatGPT — sign-in or model needed"):(mode==2?@"Custom API":@"RayNeo");}
 +    if([key isEqual:@"api"])cell.detailTextLabel.text=[Prefs stringForKey:@"model"].length?[Prefs stringForKey:@"model"]:@"Not configured";
-+    if([@[@"cueMode",@"novaMode"] containsObject:key]){NSInteger mode=([Prefs objectForKey:key]?:@2).integerValue;cell.detailTextLabel.text=mode==3?@"ChatGPT account":@"Custom API · Strata when configured";}
++    if([@[@"cueMode",@"novaMode"] containsObject:key]){NSInteger mode=[([Prefs objectForKey:key]?:@2) integerValue];cell.detailTextLabel.text=mode==3?@"ChatGPT account":@"Custom API · Strata when configured";}
 +    if([key isEqual:@"history"])cell.detailTextLabel.text=[NSString stringWithFormat:@"%lu messages in this session",(unsigned long)[Controller.history snapshot].count];
 +    if([key isEqual:@"tts"]||[key isEqual:@"exit"]){
 +        BOOL speech=[key isEqual:@"tts"];UISwitch *toggle=[UISwitch new];
