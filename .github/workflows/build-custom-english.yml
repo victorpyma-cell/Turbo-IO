@@ -1,0 +1,75 @@
+name: Build Custom English IO
+on:
+  workflow_dispatch:
+  push:
+    paths: [custom-english-source.zip, .github/workflows/build-custom-english.yml]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: patch
+      - uses: actions/checkout@v4
+        with:
+          repository: sattarde/rayneo-ios-english-edition
+          ref: 6268990646ebd41188cb084bb8ef96d70e94b869
+          persist-credentials: false
+          path: app
+      - name: Apply reviewed source and select Xcode
+        working-directory: app
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,zipfile,re,os
+          with zipfile.ZipFile('../patch/custom-english-source.zip') as z:
+              for n in z.namelist():
+                  p=pathlib.PurePosixPath(n)
+                  assert not p.is_absolute() and '..' not in p.parts and p.parts[0]=='official-addon'
+              z.extractall('.')
+          choices=[]
+          for p in pathlib.Path('/Applications').glob('Xcode*.app'):
+              m=re.search(r'Xcode[_-](\d+)\.(\d+)',p.name)
+              if m and int(m[1])>=26:choices.append(((int(m[1]),int(m[2])),p))
+          assert choices
+          with open(os.environ['GITHUB_ENV'],'a') as f:f.write('DEVELOPER_DIR='+str(max(choices)[1]/'Contents/Developer')+'\n')
+          PY
+      - name: Compile addon
+        working-directory: app
+        env:
+          TIO_IMAGE_RX_LAB: '1'
+          TIO_IMAGE_RX_WIDE: '1'
+          TIO_DISPLAY_PHONE: '1'
+        run: bash official-addon/focus-edition/build.sh embedded com.victorpyma.turboio
+      - name: Compile and test on-device speech and translation
+        working-directory: app
+        run: bash official-addon/realtime/build.sh
+      - name: Verify and collect
+        working-directory: app
+        run: |
+          mkdir artifact
+          cp official-addon/focus-edition/build/image-rx-lab/TurboIOPrivateAddon.dylib artifact/
+          cp official-addon/build/essentials/TurboRealtime.dylib artifact/
+          cp -R official-addon/build/essentials/resources artifact/
+          cp -R official-addon/focus-edition/TurboIOArt artifact/
+          cp LICENSE NOTICE THIRD_PARTY_NOTICES.md artifact/
+          python3 - <<'PY'
+          import pathlib,hashlib,json,subprocess
+          root=pathlib.Path('artifact')
+          for n in ['TurboIOPrivateAddon.dylib','TurboRealtime.dylib']:
+              assert subprocess.check_output(['lipo','-archs',str(root/n)],text=True).strip()=='arm64'
+              subprocess.run(['codesign','--verify','--strict',str(root/n)],check=True)
+          digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          manifest={'source_repository':'sattarde/rayneo-ios-english-edition','source_commit':'6268990646ebd41188cb084bb8ef96d70e94b869','source_modified':True,'target_bundle_id':'com.victorpyma.turboio','minimum_realtime_ios':'26.0','status':'COMPILED_NOT_DEVICE_TESTED','firmware_changes':False,'source_bundle_sha256':digest(pathlib.Path('../patch/custom-english-source.zip')),'module_hashes':{p.name:digest(p) for p in root.glob('*.dylib')},'resource_hashes':{p.relative_to(root/'resources').as_posix():digest(p) for p in (root/'resources').rglob('*') if p.is_file()},'file_hashes':{p.relative_to(root).as_posix():digest(p) for p in root.rglob('*') if p.is_file()}}
+          (root/'build-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: english-custom-${{ github.run_id }}
+          path: app/artifact/
+          if-no-files-found: error
+          retention-days: 7
